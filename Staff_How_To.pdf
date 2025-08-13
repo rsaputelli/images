@@ -1,0 +1,131 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Length 3440 >>
+stream
+BT
+/F1 10 Tf
+1 0 0 1 54 738 Tm
+(STAFF HOWTO  Website Image Licensing Audit \(MVP\)) Tj
+1 0 0 1 54 724 Tm
+() Tj
+1 0 0 1 54 710 Tm
+(Purpose) Tj
+1 0 0 1 54 696 Tm
+( Quickly scan a site you manage for images that might need licensing review.) Tj
+1 0 0 1 54 682 Tm
+() Tj
+1 0 0 1 54 668 Tm
+(Access) Tj
+1 0 0 1 54 654 Tm
+( Go to the Streamlit app URL.) Tj
+1 0 0 1 54 640 Tm
+( If prompted, enter the passcode \(ask your admin if you dont have it\).) Tj
+1 0 0 1 54 626 Tm
+() Tj
+1 0 0 1 54 612 Tm
+(Run a Scan) Tj
+1 0 0 1 54 598 Tm
+(1\) Paste the Start URL \(usually the homepage\).) Tj
+1 0 0 1 54 584 Tm
+(2\) Scope & Depth:) Tj
+1 0 0 1 54 570 Tm
+(    Leave Include subdomains OFF at first \(enable if the site uses multiple subs\).) Tj
+1 0 0 1 54 556 Tm
+(    Set Max crawl depth to 23 for typical sites.) Tj
+1 0 0 1 54 542 Tm
+(3\) Limits \(safety valves\):) Tj
+1 0 0 1 54 528 Tm
+(    Max pages / Max images: caps how far the run can go.) Tj
+1 0 0 1 54 514 Tm
+(    Perpage image cap: stop collecting more than N images per page.) Tj
+1 0 0 1 54 500 Tm
+(    Perimage size cap \(MB\) & Total download cap \(MB\): limits data fetched for) Tj
+1 0 0 1 54 486 Tm
+(EXIF/thumbnails.) Tj
+1 0 0 1 54 472 Tm
+(4\) Fetch Policy:) Tj
+1 0 0 1 54 458 Tm
+(    Use moderate Concurrency \(e.g., 5\) and a Base delay \(e.g., 300 ms\) to be polite.) Tj
+1 0 0 1 54 444 Tm
+(5\) Features:) Tj
+1 0 0 1 54 430 Tm
+(    Attempt EXIF/IPTC: ON \(reads EXIF Artist when available\).) Tj
+1 0 0 1 54 416 Tm
+(    Show thumbnails: optional; ON uses more data \(respects caps\). When ON, EXIF is) Tj
+1 0 0 1 54 402 Tm
+(autoenabled.) Tj
+1 0 0 1 54 388 Tm
+(    Capture CSS background images: OFF by default; turn ON only if you need to catch) Tj
+1 0 0 1 54 374 Tm
+(hero/section backgrounds \(may include fonts/gradients\).) Tj
+1 0 0 1 54 360 Tm
+(6\) Click Run Audit.) Tj
+1 0 0 1 54 346 Tm
+() Tj
+1 0 0 1 54 332 Tm
+(Review Results) Tj
+1 0 0 1 54 318 Tm
+( Use Show likely stock/library only to focus on stockhosted images.) Tj
+1 0 0 1 54 304 Tm
+( Use Show rows with risk flags to prioritize review.) Tj
+1 0 0 1 54 290 Tm
+( Use the Search box to filter by URL, page, alt text, or domain.) Tj
+1 0 0 1 54 276 Tm
+( Click Google Images / TinEye links in each row to perform a quick provenance check.) Tj
+1 0 0 1 54 262 Tm
+( Columns include: Page, Image URL, Source Type \(IMG/CSS\), Alt Text, Domain, Guessed Source,) Tj
+1 0 0 1 54 248 Tm
+(  ContentType, Estimated Bytes, EXIF Artist, Width/Height, Google Images, TinEye, Notes,) Tj
+1 0 0 1 54 234 Tm
+(Risk Flags.) Tj
+1 0 0 1 54 220 Tm
+() Tj
+1 0 0 1 54 206 Tm
+(Risk Flags \(what they mean\)) Tj
+1 0 0 1 54 192 Tm
+( Stock source  ensure license: hosted on a known stock domain \(e.g., Shutterstock, Getty\).) Tj
+1 0 0 1 54 178 Tm
+( No alt text \(check provenance\): missing alt text on <img>; not proof of misuse but worth) Tj
+1 0 0 1 54 164 Tm
+(verifying.) Tj
+1 0 0 1 54 150 Tm
+( Very large file \( N MB\): may be a licensed asset or hero image  doublecheck rights.) Tj
+1 0 0 1 54 136 Tm
+( Very large dimensions \( N px on either side\): likely a hero/banner  doublecheck rights.) Tj
+1 0 0 1 54 122 Tm
+( Suspicious stock ID in filename: filename includes patterns like shutterstock_12345.) Tj
+1 0 0 1 54 108 Tm
+( Offdomain asset \(hotlink\): file is hosted on a different registrable domain than the) Tj
+1 0 0 1 54 94 Tm
+(start URL.) Tj
+1 0 0 1 54 80 Tm
+( Brand term match: URL/alt contains one of your brand/trademark terms; may indicate a) Tj
+ET
+
+endstream
+endobj
+3 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 3 0 R /MediaBox [0 0 612 792] /Contents 2 0 R /Resources << /Font << /F1 1 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Catalog /Pages 3 0 R >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000003571 00000 n 
+0000003628 00000 n 
+0000003754 00000 n 
+trailer
+<< /Size 6 /Root 5 0 R >>
+startxref
+3803
+%%EOF
