@@ -1,4 +1,5 @@
 import os
+import json
 import streamlit as st
 import requests
 from urllib.parse import urljoin, urlparse
@@ -19,16 +20,12 @@ from PIL import Image, UnidentifiedImageError
 # This file contains only executable Streamlit code.
 
 # --------------------------
-# App Config & Constants
+# App Config & Passcode Gate
 # --------------------------
 st.set_page_config(page_title="Website Image Licensing Audit (MVP)", layout="wide")
 
-# --------------------------
-# Optional passcode gate
-# --------------------------
 PASSCODE = st.secrets.get("APP_PASSCODE") or os.getenv("APP_PASSCODE")
 if PASSCODE:
-    # Persist unlock state across reruns in this browser session
     if not st.session_state.get("_authed", False):
         with st.form("passcode_gate"):
             user_code = st.text_input("Enter passcode", type="password")
@@ -38,18 +35,34 @@ if PASSCODE:
                 st.session_state["_authed"] = True
             else:
                 st.error("Invalid passcode.")
-        # If still not authed, stop before rendering any UI
         if not st.session_state.get("_authed", False):
             st.stop()
-# --------------------------
-# Title
-# --------------------------
+
 st.title("🕵️ Website Image Licensing Audit — MVP")
+
+# --------------------------
+# Quick Resume Banner (main area)
+# --------------------------
+if st.session_state.get("crawl_state"):
+    _cs = st.session_state.crawl_state
+    _su = (_cs or {}).get("start_url")
+    _pp = int((_cs or {}).get("pages_processed", 0))
+    _im = int((_cs or {}).get("images_found", 0))
+    _dom = urlparse(_su).netloc if _su else ""
+    with st.container(border=True):
+        st.write(f"**Resumable state detected** for `{_dom}` — pages: {_pp}, images: {_im}.")
+        c1, c2 = st.columns([1,1])
+        with c1:
+            if st.button("▶️ Resume where I left off"):
+                st.session_state["_resume_request"] = True
+        with c2:
+            if st.button("🗑️ Discard saved state"):
+                st.session_state["crawl_state"] = None
+                st.rerun()
 
 # --------------------------
 # Constants
 # --------------------------
-
 DEFAULT_HEADERS = {
     "User-Agent": "ImageLicenseAuditor/1.0 (+https://example.org; contact=webmaster@example.org)"
 }
@@ -63,12 +76,19 @@ STOCK_DOMAINS = {
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 URL_IN_CSS = re.compile(r"url\(([^)]+)\)")
 
+if "crawl_state" not in st.session_state:
+    st.session_state.crawl_state = None  # holds resumable state dict
+
 # --------------------------
 # Sidebar Controls
 # --------------------------
 with st.sidebar:
     st.header("Settings")
-    start_url = st.text_input("Start URL", placeholder="https://example.com")
+    start_url = st.text_input(
+        "Start URL",
+        value=(st.session_state.crawl_state.get("start_url") if st.session_state.get("crawl_state") else ""),
+        placeholder="https://example.com",
+    )
 
     st.markdown("**Scope & Depth**")
     include_subdomains = st.checkbox("Include subdomains", value=False)
@@ -101,14 +121,46 @@ with st.sidebar:
     if power:
         st.info("Power user mode enabled. Be respectful of target sites and your Streamlit resource limits.")
 
+    st.markdown("**Resume / Checkpoint**")
+    resume_upload = st.file_uploader("Resume from checkpoint (.json)", type=["json"], help="Load a previously saved crawl state.")
+    load_clicked = st.button("Load checkpoint")
+    cont_clicked = st.button("Continue from saved state") if st.session_state.get("crawl_state") else False
+    reset_clicked = st.button("Reset saved state") if st.session_state.get("crawl_state") else False
+
     go = st.button("Run Audit", type="primary")
     stop = st.button("Stop")
+
+# Handle checkpoint load/reset in sidebar
+if resume_upload is not None and load_clicked:
+    try:
+        cp = json.load(resume_upload)
+        state = cp.get("state", {})
+        # Basic sanity check
+        if not state or "queue" not in state:
+            st.sidebar.error("Invalid checkpoint file.")
+        else:
+            st.session_state.crawl_state = state
+            st.sidebar.success("Checkpoint loaded. Click 'Continue from saved state' or 'Run Audit' to resume.")
+    except Exception as e:
+        st.sidebar.error(f"Failed to load checkpoint: {e}")
+
+if reset_clicked:
+    st.session_state.crawl_state = None
+    st.sidebar.info("Saved state cleared.")
 
 # Stop flag
 if "_stop" not in st.session_state:
     st.session_state._stop = False
 if stop:
     st.session_state._stop = True
+
+# Allow 'Continue' from saved state
+if cont_clicked:
+    go = True
+# Allow Resume from main banner
+if st.session_state.get("_resume_request"):
+    go = True
+    st.session_state["_resume_request"] = False
 
 # --------------------------
 # Helpers
@@ -118,13 +170,11 @@ def same_scope(url: str, root: str, include_subs: bool) -> bool:
     try:
         t_root = tldextract.extract(root)
         t_url = tldextract.extract(url)
-        # Must match registrable domain and suffix
         same_reg = (t_root.domain == t_url.domain and t_root.suffix == t_url.suffix)
         if not same_reg:
             return False
         if include_subs:
             return True
-        # Without subdomains: either exact host match or both are bare
         return (t_root.subdomain == t_url.subdomain)
     except Exception:
         return False
@@ -155,7 +205,6 @@ def polite_get(session: requests.Session, url: str, delay_ms: int, timeout: int 
 def extract_img_links_from_html(base_url: str, html: str, per_page_cap: int):
     soup = BeautifulSoup(html, 'html.parser')
     found = []
-    # IMG tags
     for img in soup.find_all('img'):
         src = img.get('src') or img.get('data-src')
         if not src:
@@ -166,11 +215,10 @@ def extract_img_links_from_html(base_url: str, html: str, per_page_cap: int):
         if len(found) >= per_page_cap:
             break
 
-    # Inline style backgrounds
     for el in soup.find_all(style=True):
         style = el.get('style')
         for m in URL_IN_CSS.findall(style or ''):
-            u = m.strip('"\'')
+            u = m.strip('\"\'')
             u = urljoin(base_url, u)
             found.append((u, 'CSS Background', ''))
             if len(found) >= per_page_cap:
@@ -178,7 +226,6 @@ def extract_img_links_from_html(base_url: str, html: str, per_page_cap: int):
         if len(found) >= per_page_cap:
             break
 
-    # Linked CSS files
     css_links = []
     for link in soup.find_all('link', rel=lambda x: x and 'stylesheet' in x):
         href = link.get('href')
@@ -191,7 +238,7 @@ def extract_img_links_from_html(base_url: str, html: str, per_page_cap: int):
 def extract_urls_from_css(css_text: str, base_url: str):
     urls = []
     for m in URL_IN_CSS.findall(css_text or ''):
-        u = m.strip('"\'')
+        u = m.strip('\"\'')
         u = urljoin(base_url, u)
         urls.append(u)
     return urls
@@ -253,19 +300,23 @@ def fetch_bytes(session: requests.Session, url: str, max_bytes: int):
         return None, 0
 
 
-def try_make_thumb(img_bytes: BytesIO):
-    try:
-        with Image.open(img_bytes) as im:
-            im.thumbnail((128, 128))
-            out = BytesIO()
-            im.save(out, format='PNG')
-            out.seek(0)
-            return out
-    except (UnidentifiedImageError, OSError):
-        return None
+def make_checkpoint_dict(state: dict, settings: dict) -> dict:
+    # Convert non-JSON types (set/tuples) to JSON-serializable structures
+    serializable_state = {
+        "start_url": state.get("start_url"),
+        "visited_pages": sorted(list(state.get("visited_pages", []))),
+        "queue": list(state.get("queue", [])),
+        "depth": state.get("depth", {}),
+        "pages_processed": int(state.get("pages_processed", 0)),
+        "images_found": int(state.get("images_found", 0)),
+        "total_bytes_downloaded": int(state.get("total_bytes_downloaded", 0)),
+        "rows": state.get("rows", []),
+        "css_queue": list(state.get("css_queue", [])),  # list of [page_url, css_url]
+    }
+    return {"settings": settings, "state": serializable_state}
 
 # --------------------------
-# Main Audit Logic
+# Main Audit Logic (with resume)
 # --------------------------
 if go:
     st.session_state._stop = False
@@ -274,30 +325,39 @@ if go:
         st.error("Please enter a start URL.")
         st.stop()
 
+    # Initialize or resume state
+    if st.session_state.crawl_state and st.session_state.crawl_state.get("start_url") == start_url:
+        state = st.session_state.crawl_state
+        visited_pages = set(state.get("visited_pages", []))
+        q = list(state.get("queue", []))
+        depth = dict(state.get("depth", {}))
+        pages_processed = int(state.get("pages_processed", 0))
+        images_found = int(state.get("images_found", 0))
+        total_bytes_downloaded = int(state.get("total_bytes_downloaded", 0))
+        rows = list(state.get("rows", []))
+        css_queue = list(state.get("css_queue", []))
+    else:
+        visited_pages = set()
+        q = [start_url]
+        depth = {start_url: 0}
+        pages_processed = 0
+        images_found = 0
+        total_bytes_downloaded = 0
+        rows = []
+        css_queue = []
+
     rp, session = get_robots_session(start_url)
 
-    # Robots check for start page
     if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], start_url):
         st.warning("robots.txt disallows crawling the start URL. Aborting.")
         st.stop()
-
-    q = [start_url]
-    visited_pages = set()
-    depth = {start_url: 0}
-
-    pages_processed = 0
-    images_found = 0
-    total_bytes_downloaded = 0
-
-    rows = []
-    css_queue = []
 
     progress = st.progress(0)
     status = st.empty()
 
     while q and not st.session_state._stop:
         if pages_processed >= max_pages:
-            status.info("Hit page limit. Stopping crawl.")
+            status.info("Hit page limit. You can resume by raising the limit and clicking 'Continue from saved state'.")
             break
 
         url = q.pop(0)
@@ -312,7 +372,6 @@ if go:
         if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], url):
             continue
 
-        # Fetch page
         resp = polite_get(session, url, base_delay_ms)
         if not resp or not (200 <= resp.status_code < 300):
             continue
@@ -324,17 +383,15 @@ if go:
         html = resp.text
         page_imgs, css_links = extract_img_links_from_html(url, html, per_page_img_cap)
 
-        # Queue CSS files to parse for background images
         if parse_css_backgrounds:
             for css in css_links:
                 if same_scope(css, start_url, include_subdomains):
                     css_queue.append((url, css))
 
-        # Discover links for crawl (same-scope only)
         soup = BeautifulSoup(html, 'html.parser')
         for a in soup.find_all('a', href=True):
             href = urljoin(url, a['href'])
-            href = href.split('#')[0]  # strip fragments
+            href = href.split('#')[0]
             if not same_scope(href, start_url, include_subdomains):
                 continue
             if href not in visited_pages and href not in depth:
@@ -342,7 +399,6 @@ if go:
                 if d + 1 <= depth_max:
                     q.append(href)
 
-        # HEAD concurrently to estimate sizes/content-types
         to_process = list({u for (u, _, _) in page_imgs})
         results = []
         with ThreadPoolExecutor(max_workers=concurrency) as ex:
@@ -352,7 +408,6 @@ if go:
                 size, ct = fut.result()
                 results.append((u, size, ct))
 
-        # Build rows
         for (u, stype, alt) in page_imgs:
             if images_found >= max_images or st.session_state._stop:
                 break
@@ -362,7 +417,6 @@ if go:
             source_guess = guessed_source(u)
             g_link, t_link = reverse_links(u)
 
-            # Size from HEAD (if available)
             match = next((r for r in results if r[0] == u), None)
             est_bytes = match[1] if match else None
             content_type_img = match[2] if match else ''
@@ -374,8 +428,6 @@ if go:
                 note = "Skipped (exceeds per-image size cap)"
 
             exif_author = ""
-
-            # Optional EXIF if size OK and looks like an image
             if try_exif and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS):
                 if total_bytes_downloaded < total_bytes_cap_mb * 1024 * 1024:
                     buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
@@ -385,7 +437,7 @@ if go:
                             with Image.open(buf) as im:
                                 exif = im.getexif()
                                 if exif:
-                                    artist = exif.get(315)  # Artist tag
+                                    artist = exif.get(315)
                                     if artist:
                                         exif_author = str(artist)
                         except (UnidentifiedImageError, OSError):
@@ -420,17 +472,15 @@ if go:
         progress.progress(min(1.0, pages_processed / max(1, max_pages)))
         status.write(f"Crawled {pages_processed} page(s), collected {images_found} image(s).")
 
-        # Early exit if image cap reached
         if images_found >= max_images:
-            status.info("Hit image limit. Stopping crawl.")
+            status.info("Hit image limit. You can resume by raising the limit and clicking 'Continue from saved state'.")
             break
 
-        # Fetch linked CSS files for background images
         if parse_css_backgrounds and css_queue and not st.session_state._stop:
             with ThreadPoolExecutor(max_workers=min(concurrency, 4)) as ex:
                 futs = {ex.submit(polite_get, session, css_url, base_delay_ms): (page_url, css_url)
                         for (page_url, css_url) in css_queue}
-                css_queue = []  # clear; we process once
+                css_queue = []
                 for fut in as_completed(futs):
                     page_url, css_url = futs[fut]
                     resp_css = fut.result()
@@ -486,14 +536,30 @@ if go:
                         if images_found >= max_images:
                             break
 
+        # Persist state after each page
+        st.session_state.crawl_state = {
+            "start_url": start_url,
+            "visited_pages": list(visited_pages),
+            "queue": list(q),
+            "depth": depth,
+            "pages_processed": pages_processed,
+            "images_found": images_found,
+            "total_bytes_downloaded": total_bytes_downloaded,
+            "rows": rows,
+            "css_queue": css_queue,
+        }
+
     # --------------------------
-    # Results & Export
+    # Results & Export + Checkpoint
     # --------------------------
     if rows:
         df = pd.DataFrame(rows)
-        st.success(f"Audit complete: {pages_processed} page(s), {images_found} image(s).")
+        finished = (not q) and (not css_queue)
+        if finished:
+            st.success(f"Audit complete: {pages_processed} page(s), {images_found} image(s).")
+        else:
+            st.info(f"Partial results: {pages_processed} page(s), {images_found} image(s). You can resume later.")
 
-        # Quick filters
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             only_stock = st.checkbox("Show likely stock/library only", value=False)
@@ -518,7 +584,6 @@ if go:
 
         st.dataframe(view, use_container_width=True, hide_index=True)
 
-        # Export buttons
         def to_excel_bytes(df_: pd.DataFrame) -> bytes:
             out = BytesIO()
             with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
@@ -532,7 +597,25 @@ if go:
         st.download_button("Download CSV", data=csv_bytes, file_name="image_licensing_audit.csv", mime="text/csv")
         st.download_button("Download Excel", data=xlsx_bytes, file_name="image_licensing_audit.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        st.caption("Notes: Respect each site's robots.txt and terms. Reverse-image links open Google Images/TinEye with the image URL prefilled; results are not scraped.")
+        # Offer a checkpoint download to resume later
+        settings = {
+            "include_subdomains": include_subdomains,
+            "depth_max": depth_max,
+            "max_pages": max_pages,
+            "max_images": max_images,
+            "per_page_img_cap": per_page_img_cap,
+            "per_image_size_mb": per_image_size_mb,
+            "total_bytes_cap_mb": total_bytes_cap_mb,
+            "concurrency": concurrency,
+            "base_delay_ms": base_delay_ms,
+            "parse_css_backgrounds": parse_css_backgrounds,
+            "try_exif": try_exif,
+        }
+        cp_dict = make_checkpoint_dict(st.session_state.crawl_state, settings)
+        cp_bytes = json.dumps(cp_dict).encode('utf-8')
+        st.download_button("Download checkpoint to resume later", data=cp_bytes, file_name="audit_checkpoint.json", mime="application/json")
+
+        st.caption("Notes: You can resume a partial crawl using the sidebar 'Resume from checkpoint' loader or the 'Continue from saved state' button. Respect each site's robots.txt and terms. Reverse-image links open Google Images/TinEye; results are not scraped.")
     else:
         st.warning("No images found or crawl blocked. Try adjusting limits, enabling subdomains, or verifying the start URL.")
 
