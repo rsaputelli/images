@@ -18,7 +18,6 @@ from PIL import Image, UnidentifiedImageError
 # Website Image Licensing Audit — MVP (app)
 # ==========================================
 # NOTE: README content must live in README.md, not inside this file.
-# This file contains only executable Streamlit code.
 
 # --------------------------
 # App Config & Passcode Gate
@@ -42,7 +41,7 @@ if PASSCODE:
 st.title("🕵️ Website Image Licensing Audit — MVP")
 
 # --------------------------
-# Quick Resume Banner (main area)
+# Quick Resume Banner
 # --------------------------
 if st.session_state.get("crawl_state"):
     _cs = st.session_state.crawl_state
@@ -53,7 +52,7 @@ if st.session_state.get("crawl_state"):
     with st.container(border=True):
         st.write(f"**Resumable state detected** for `{_dom}` — total pages: {_pp}, total images: {_im}.")
         st.caption("When resuming, slider limits apply to **additional** pages/images/bytes for this run.")
-        c1, c2 = st.columns([1,1])
+        c1, c2 = st.columns([1, 1])
         with c1:
             if st.button("▶️ Resume where I left off"):
                 st.session_state["_resume_request"] = True
@@ -77,6 +76,10 @@ STOCK_DOMAINS = {
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 URL_IN_CSS = re.compile(r"url\(([^)]+)\)")
+STOCK_ID_RE = re.compile(
+    r"(shutterstock|adobestock|istock|istockphoto|gettyimages|depositphotos|dreamstime|alamy|123rf|bigstock|canstockphoto|pond5)[-_]?\d{4,}",
+    re.I,
+)
 
 if "crawl_state" not in st.session_state:
     st.session_state.crawl_state = None  # holds resumable state dict
@@ -92,14 +95,14 @@ with st.sidebar:
         placeholder="https://example.com",
     )
 
-    # Determine if we are in a resume context for this start_url
+    # Determine if we are resuming this same URL
     resuming_context = bool(
         st.session_state.get("crawl_state") and st.session_state.crawl_state.get("start_url") == start_url
     )
 
     st.markdown("**Scope & Depth**")
     include_subdomains = st.checkbox("Include subdomains", value=False)
-    depth_max = st.slider("Max crawl depth", min_value=1, max_value=5, value=3)
+    depth_max = st.slider("Max crawl depth", 1, 5, 3)
 
     st.markdown("**Limits**")
     max_pages_default = 100
@@ -108,7 +111,6 @@ with st.sidebar:
     per_image_size_mb_default = 5
     total_bytes_cap_mb_default = 200
 
-    # On resume, these sliders mean "additional this run"
     pages_label = "Additional pages this run" if resuming_context else "Max pages"
     images_label = "Additional images this run" if resuming_context else "Max images (total)"
     bytes_label = "Additional download cap (MB) this run" if resuming_context else "Total download cap (MB)"
@@ -126,7 +128,7 @@ with st.sidebar:
     base_delay_ms = st.slider("Base delay between requests (ms)", 0, 1000, 300, step=50)
 
     st.markdown("**Features**")
-    parse_css_backgrounds = st.checkbox("Capture CSS background images", value=True)
+    parse_css_backgrounds = st.checkbox("Capture CSS background images", value=False)
     try_exif = st.checkbox("Attempt EXIF/IPTC (≤ size cap)", value=True)
     show_thumbs = st.checkbox("Show thumbnails (may be slow)", value=False)
 
@@ -146,15 +148,23 @@ with st.sidebar:
     cont_clicked = st.button("Continue from saved state") if st.session_state.get("crawl_state") else False
     reset_clicked = st.button("Reset saved state") if st.session_state.get("crawl_state") else False
 
+    st.markdown("**Risk Heuristics**")
+    flag_large = st.checkbox("Flag very large images", value=True)
+    large_px = st.number_input("Large if width or height ≥ (px)", 1000, 10000, 3840, step=100)
+    large_mb = st.number_input("Large if file size ≥ (MB)", 1, 50, 5, step=1)
+    flag_suspicious = st.checkbox("Flag suspicious filenames (stock IDs)", value=True)
+    flag_offdomain = st.checkbox("Flag hotlinked off-domain assets", value=True)
+    brand_terms_raw = st.text_input("Brand/trademark terms (comma-separated)", value="")
+    flag_brand = st.checkbox("Flag if URL/alt matches brand terms", value=True)
+
     go = st.button("Run Audit", type="primary")
     stop = st.button("Stop")
 
-# Handle checkpoint load/reset in sidebar
+# Handle checkpoint load/reset
 if resume_upload is not None and load_clicked:
     try:
         cp = json.load(resume_upload)
         state = cp.get("state", {})
-        # Basic sanity check
         if not state or "queue" not in state:
             st.sidebar.error("Invalid checkpoint file.")
         else:
@@ -176,7 +186,6 @@ if stop:
 # Allow 'Continue' from saved state
 if cont_clicked:
     go = True
-# Allow Resume from main banner
 if st.session_state.get("_resume_request"):
     go = True
     st.session_state["_resume_request"] = False
@@ -184,7 +193,6 @@ if st.session_state.get("_resume_request"):
 # --------------------------
 # Helpers
 # --------------------------
-
 def same_scope(url: str, root: str, include_subs: bool) -> bool:
     try:
         t_root = tldextract.extract(root)
@@ -197,7 +205,6 @@ def same_scope(url: str, root: str, include_subs: bool) -> bool:
         return (t_root.subdomain == t_url.subdomain)
     except Exception:
         return False
-
 
 def get_robots_session(base_url: str):
     parsed = urlparse(base_url)
@@ -212,7 +219,6 @@ def get_robots_session(base_url: str):
     s.headers.update(DEFAULT_HEADERS)
     return rp, s
 
-
 def polite_get(session: requests.Session, url: str, delay_ms: int, timeout: int = 15):
     time.sleep(delay_ms / 1000.0)
     try:
@@ -220,10 +226,10 @@ def polite_get(session: requests.Session, url: str, delay_ms: int, timeout: int 
     except Exception:
         return None
 
-
 def extract_img_links_from_html(base_url: str, html: str, per_page_cap: int):
     soup = BeautifulSoup(html, 'html.parser')
     found = []
+    # IMG tags
     for img in soup.find_all('img'):
         src = img.get('src') or img.get('data-src')
         if not src:
@@ -233,35 +239,32 @@ def extract_img_links_from_html(base_url: str, html: str, per_page_cap: int):
         found.append((u, 'IMG Tag', alt))
         if len(found) >= per_page_cap:
             break
-
+    # Inline style backgrounds
     for el in soup.find_all(style=True):
         style = el.get('style')
         for m in URL_IN_CSS.findall(style or ''):
-            u = m.strip('\"\'')
+            u = m.strip('"\'')
             u = urljoin(base_url, u)
             found.append((u, 'CSS Background', ''))
             if len(found) >= per_page_cap:
                 break
         if len(found) >= per_page_cap:
             break
-
+    # Linked CSS files
     css_links = []
     for link in soup.find_all('link', rel=lambda x: x and 'stylesheet' in x):
         href = link.get('href')
         if href:
             css_links.append(urljoin(base_url, href))
-
     return found, css_links
-
 
 def extract_urls_from_css(css_text: str, base_url: str):
     urls = []
     for m in URL_IN_CSS.findall(css_text or ''):
-        u = m.strip('\"\'')
+        u = m.strip('"\'')
         u = urljoin(base_url, u)
         urls.append(u)
     return urls
-
 
 def file_ext(url: str) -> str:
     path = urlparse(url).path.lower()
@@ -270,13 +273,11 @@ def file_ext(url: str) -> str:
             return ext
     return ''
 
-
 def domain_of(url: str) -> str:
     try:
         return tldextract.extract(url).registered_domain
     except Exception:
         return ''
-
 
 def guessed_source(url: str) -> str:
     dom = domain_of(url)
@@ -284,12 +285,10 @@ def guessed_source(url: str) -> str:
         return f"Stock / Library ({dom})"
     return "Unknown / Site-hosted"
 
-
 def reverse_links(url: str):
     g = f"https://www.google.com/searchbyimage?image_url={requests.utils.quote(url, safe='')}"
     t = f"https://tineye.com/search?url={requests.utils.quote(url, safe='')}"
     return g, t
-
 
 def head_size(session: requests.Session, url: str, timeout: int = 15):
     try:
@@ -299,7 +298,6 @@ def head_size(session: requests.Session, url: str, timeout: int = 15):
         return int(size) if size and size.isdigit() else None, ct
     except Exception:
         return None, ''
-
 
 def fetch_bytes(session: requests.Session, url: str, max_bytes: int):
     try:
@@ -318,7 +316,6 @@ def fetch_bytes(session: requests.Session, url: str, max_bytes: int):
     except Exception:
         return None, 0
 
-
 def try_make_thumb(img_bytes: BytesIO, max_px: int = 128) -> BytesIO | None:
     try:
         with Image.open(img_bytes) as im:
@@ -331,9 +328,7 @@ def try_make_thumb(img_bytes: BytesIO, max_px: int = 128) -> BytesIO | None:
     except (UnidentifiedImageError, OSError):
         return None
 
-
 def make_checkpoint_dict(state: dict, settings: dict) -> dict:
-    # Convert non-JSON types (set/tuples) to JSON-serializable structures
     serializable_state = {
         "start_url": state.get("start_url"),
         "visited_pages": sorted(list(state.get("visited_pages", []))),
@@ -343,7 +338,7 @@ def make_checkpoint_dict(state: dict, settings: dict) -> dict:
         "images_found": int(state.get("images_found", 0)),
         "total_bytes_downloaded": int(state.get("total_bytes_downloaded", 0)),
         "rows": state.get("rows", []),
-        "css_queue": list(state.get("css_queue", [])),  # list of [page_url, css_url]
+        "css_queue": list(state.get("css_queue", [])),
     }
     return {"settings": settings, "state": serializable_state}
 
@@ -368,11 +363,9 @@ if go:
         total_bytes_downloaded = int(state.get("total_bytes_downloaded", 0))
         rows = list(state.get("rows", []))
         css_queue = list(state.get("css_queue", []))
-        # Baselines for delta-limits this run
         baseline_pages = pages_processed
         baseline_images = images_found
         baseline_bytes = total_bytes_downloaded
-        resuming_now = True
     else:
         visited_pages = set()
         q = [start_url]
@@ -385,9 +378,12 @@ if go:
         baseline_pages = 0
         baseline_images = 0
         baseline_bytes = 0
-        resuming_now = False
 
     rp, session = get_robots_session(start_url)
+
+    # Hotlink baseline + brand terms
+    root_regdomain = tldextract.extract(start_url).registered_domain
+    brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if t.strip()]
 
     if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], start_url):
         st.warning("robots.txt disallows crawling the start URL. Aborting.")
@@ -398,15 +394,12 @@ if go:
 
     def added_pages() -> int:
         return max(0, pages_processed - baseline_pages)
-
     def added_images() -> int:
         return max(0, images_found - baseline_images)
-
     def added_bytes() -> int:
         return max(0, total_bytes_downloaded - baseline_bytes)
 
     while q and not st.session_state._stop:
-        # Per-run (delta) page cap
         if added_pages() >= max_pages:
             status.info("Hit additional page limit for this run. You can raise the limit and resume again.")
             break
@@ -419,7 +412,6 @@ if go:
 
         if d > depth_max:
             continue
-
         if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], url):
             continue
 
@@ -441,8 +433,7 @@ if go:
 
         soup = BeautifulSoup(html, 'html.parser')
         for a in soup.find_all('a', href=True):
-            href = urljoin(url, a['href'])
-            href = href.split('#')[0]
+            href = urljoin(url, a['href']).split('#')[0]
             if not same_scope(href, start_url, include_subdomains):
                 continue
             if href not in visited_pages and href not in depth:
@@ -482,18 +473,21 @@ if go:
             thumb_data = None
             width = None
             height = None
-            # Download bytes if needed for EXIF and/or thumbnails
-            need_fetch = (try_exif or show_thumbs) and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS)
+
+            # Auto-enable EXIF whenever thumbnails are on
+            effective_try_exif = (try_exif or show_thumbs)
+            need_fetch = (effective_try_exif or show_thumbs) and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS)
+
             if need_fetch:
                 if added_bytes() < total_bytes_cap_mb * 1024 * 1024:
                     buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                     total_bytes_downloaded += n
                     if buf:
-                        if try_exif:
+                        if effective_try_exif:
                             try:
                                 with Image.open(buf) as im:
-                            width, height = im.size
-                            exif = im.getexif()
+                                    width, height = im.size
+                                    exif = im.getexif()
                                     if exif:
                                         artist = exif.get(315)
                                         if artist:
@@ -501,17 +495,41 @@ if go:
                             except (UnidentifiedImageError, OSError):
                                 pass
                         if show_thumbs:
+                            try:
+                                buf.seek(0)
+                            except Exception:
+                                pass
                             thumb = try_make_thumb(buf)
                             if thumb:
                                 thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
                 else:
                     note = (note + "; " if note else "") + "Skipped (hit additional download cap this run)"
 
+            # ---- Risk flags ----
             risk = []
             if dom in STOCK_DOMAINS:
                 risk.append("Stock source — ensure license")
             if not alt:
                 risk.append("No alt text (check provenance)")
+            if flag_large and (est_bytes is not None) and est_bytes >= int(large_mb) * 1024 * 1024:
+                risk.append(f"Very large file (≥ {int(large_mb)} MB)")
+            if flag_large and width and height and (width >= int(large_px) or height >= int(large_px)):
+                risk.append(f"Very large dimensions ({width}×{height} px)")
+            if flag_suspicious:
+                try:
+                    pth = urlparse(u).path.lower()
+                except Exception:
+                    pth = ""
+                if pth and STOCK_ID_RE.search(pth):
+                    risk.append("Suspicious stock ID in filename")
+            if flag_offdomain and dom and root_regdomain and dom != root_regdomain:
+                risk.append("Off-domain asset (hotlink)")
+            if flag_brand and brand_terms:
+                hay = (u + " " + (alt or "")).lower()
+                for term in brand_terms:
+                    if term and term in hay:
+                        risk.append(f"Brand term match: {term}")
+                        break
 
             rows.append({
                 "Page": url,
@@ -534,7 +552,6 @@ if go:
             images_found += 1
 
         pages_processed += 1
-        # Progress and status use delta pages as denominator
         progress.progress(min(1.0, added_pages() / max(1, max_pages)))
         status.write(
             f"Total pages {pages_processed} (+{added_pages()} this run), "
@@ -570,13 +587,14 @@ if go:
                         thumb_data = None
                         width = None
                         height = None
-                        need_fetch = (try_exif or show_thumbs) and size_ok and (ct.startswith("image/") or ext in IMG_EXTS)
+                        effective_try_exif = (try_exif or show_thumbs)
+                        need_fetch = (effective_try_exif or show_thumbs) and size_ok and (ct.startswith("image/") or ext in IMG_EXTS)
                         if need_fetch:
                             if added_bytes() < total_bytes_cap_mb * 1024 * 1024:
                                 buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                                 total_bytes_downloaded += n
                                 if buf:
-                                    if try_exif:
+                                    if effective_try_exif:
                                         try:
                                             with Image.open(buf) as im:
                                                 width, height = im.size
@@ -588,6 +606,10 @@ if go:
                                         except (UnidentifiedImageError, OSError):
                                             pass
                                     if show_thumbs:
+                                        try:
+                                            buf.seek(0)
+                                        except Exception:
+                                            pass
                                         thumb = try_make_thumb(buf)
                                         if thumb:
                                             thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
@@ -596,23 +618,47 @@ if go:
 
                         g_link, t_link = reverse_links(u)
                         dom = domain_of(u)
+
+                        risk = []
+                        if dom in STOCK_DOMAINS:
+                            risk.append("Stock source — ensure license")
+                        if flag_large and (size is not None) and size >= int(large_mb) * 1024 * 1024:
+                            risk.append(f"Very large file (≥ {int(large_mb)} MB)")
+                        if flag_large and width and height and (width >= int(large_px) or height >= int(large_px)):
+                            risk.append(f"Very large dimensions ({width}×{height} px)")
+                        if flag_suspicious:
+                            try:
+                                pth = urlparse(u).path.lower()
+                            except Exception:
+                                pth = ""
+                            if pth and STOCK_ID_RE.search(pth):
+                                risk.append("Suspicious stock ID in filename")
+                        if flag_offdomain and dom and root_regdomain and dom != root_regdomain:
+                            risk.append("Off-domain asset (hotlink)")
+                        if flag_brand and brand_terms:
+                            hay = u.lower()
+                            for term in brand_terms:
+                                if term and term in hay:
+                                    risk.append(f"Brand term match: {term}")
+                                    break
+
                         rows.append({
-                        "Page": page_url,
-                        "Image URL": u,
-                        "Source Type": "CSS Background",
-                        "Alt Text": "",
-                        "Domain": dom,
-                        "Guessed Source": guessed_source(u),
-                        "Content-Type": ct,
-                        "Estimated Bytes": size,
-                        "EXIF Artist": exif_author,
-                        "Width": width,
-                        "Height": height,
-                        "Google Images": g_link,
-                        "TinEye": t_link,
-                        "Thumbnail": thumb_data,
+                            "Page": page_url,
+                            "Image URL": u,
+                            "Source Type": "CSS Background",
+                            "Alt Text": "",
+                            "Domain": dom,
+                            "Guessed Source": guessed_source(u),
+                            "Content-Type": ct,
+                            "Estimated Bytes": size,
+                            "EXIF Artist": exif_author,
+                            "Width": width,
+                            "Height": height,
+                            "Google Images": g_link,
+                            "TinEye": t_link,
+                            "Thumbnail": thumb_data,
                             "Notes": note,
-                            "Risk Flags": "Stock source — ensure license" if dom in STOCK_DOMAINS else ""
+                            "Risk Flags": ", ".join(risk)
                         })
                         images_found += 1
                         if added_images() >= max_images:
@@ -638,48 +684,41 @@ if go:
         df = pd.DataFrame(rows)
         finished = (not q) and (not css_queue)
         if finished:
-            st.success(
-                f"Audit complete: total pages {pages_processed}, total images {images_found}."
-            )
+            st.success(f"Audit complete: total pages {pages_processed}, total images {images_found}.")
         else:
-            st.info(
-                f"Partial results: total pages {pages_processed}, total images {images_found}. "
-                f"You can resume later."
-            )
+            st.info(f"Partial results: total pages {pages_processed}, total images {images_found}. You can resume later.")
 
-        # Apply filters from sidebar (works even before the first run next time)
+        # Apply filters from sidebar
         only_stock = st.session_state.get("filter_only_stock", False)
         only_risky = st.session_state.get("filter_only_risky", False)
         search = st.session_state.get("filter_search", "")
 
         view = df.copy()
-        view['Guessed Source'] = view['Guessed Source'].fillna('')
-        view['Risk Flags'] = view['Risk Flags'].fillna('')
+        view["Guessed Source"] = view["Guessed Source"].fillna("")
+        view["Risk Flags"] = view["Risk Flags"].fillna("")
         if only_stock:
-            view = view[view['Guessed Source'].str.contains('Stock / Library', na=False)]
+            view = view[view["Guessed Source"].str.contains("Stock / Library", na=False)]
         if only_risky:
-            view = view[view['Risk Flags'].str.len() > 0]
+            view = view[view["Risk Flags"].str.len() > 0]
         if search:
             mask = (
-                view['Image URL'].astype(str).str.contains(search, case=False, na=False) |
-                view['Page'].astype(str).str.contains(search, case=False, na=False) |
-                view['Alt Text'].astype(str).str.contains(search, case=False, na=False) |
-                view['Domain'].astype(str).str.contains(search, case=False, na=False)
+                view["Image URL"].astype(str).str.contains(search, case=False, na=False) |
+                view["Page"].astype(str).str.contains(search, case=False, na=False) |
+                view["Alt Text"].astype(str).str.contains(search, case=False, na=False) |
+                view["Domain"].astype(str).str.contains(search, case=False, na=False)
             )
             view = view[mask]
 
-        # Drop Thumbnail from view if toggle off
         render_df = view.copy()
         if not show_thumbs:
-            render_df = render_df.drop(columns=['Thumbnail'], errors='ignore')
+            render_df = render_df.drop(columns=["Thumbnail"], errors="ignore")
 
-        # Clickable links + optional image thumbnails in UI
         col_cfg = {
             "Image URL": st.column_config.LinkColumn("Image URL"),
             "Google Images": st.column_config.LinkColumn("Google Images"),
             "TinEye": st.column_config.LinkColumn("TinEye"),
         }
-        if show_thumbs and 'Thumbnail' in render_df.columns:
+        if show_thumbs and "Thumbnail" in render_df.columns:
             col_cfg["Thumbnail"] = st.column_config.ImageColumn("Thumbnail")
 
         st.data_editor(
@@ -691,28 +730,26 @@ if go:
         )
 
         def to_excel_bytes(df_: pd.DataFrame) -> bytes:
-            export = df_.drop(columns=['Thumbnail'], errors='ignore').copy()
+            export = df_.drop(columns=["Thumbnail"], errors="ignore").copy()
             out = BytesIO()
             with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
                 export.to_excel(writer, sheet_name="Audit", index=False)
                 ws = writer.sheets["Audit"]
-                # Make certain columns clickable
                 url_cols = [c for c in ["Page", "Image URL", "Google Images", "TinEye"] if c in export.columns]
                 for r in range(len(export)):
                     for c in url_cols:
                         val = export.iloc[r][c]
                         if isinstance(val, str) and val.startswith(("http://", "https://")):
-                            ws.write_url(r+1, export.columns.get_loc(c), val, string=c)
+                            ws.write_url(r + 1, export.columns.get_loc(c), val, string=c)
             out.seek(0)
             return out.read()
 
-        csv_bytes = render_df.drop(columns=['Thumbnail'], errors='ignore').to_csv(index=False).encode('utf-8')
+        csv_bytes = render_df.drop(columns=["Thumbnail"], errors="ignore").to_csv(index=False).encode("utf-8")
         xlsx_bytes = to_excel_bytes(view)
 
         st.download_button("Download CSV", data=csv_bytes, file_name="image_licensing_audit.csv", mime="text/csv")
         st.download_button("Download Excel", data=xlsx_bytes, file_name="image_licensing_audit.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        # Offer a checkpoint download to resume later
         settings = {
             "include_subdomains": include_subdomains,
             "depth_max": depth_max,
@@ -725,15 +762,22 @@ if go:
             "base_delay_ms": base_delay_ms,
             "parse_css_backgrounds": parse_css_backgrounds,
             "try_exif": try_exif,
+            "show_thumbs": show_thumbs,
+            "flag_large": flag_large,
+            "large_px": int(large_px),
+            "large_mb": int(large_mb),
+            "flag_suspicious": flag_suspicious,
+            "flag_offdomain": flag_offdomain,
+            "flag_brand": flag_brand,
+            "brand_terms_raw": brand_terms_raw,
         }
         cp_dict = make_checkpoint_dict(st.session_state.crawl_state, settings)
-        cp_bytes = json.dumps(cp_dict).encode('utf-8')
+        cp_bytes = json.dumps(cp_dict).encode("utf-8")
         st.download_button("Download checkpoint to resume later", data=cp_bytes, file_name="audit_checkpoint.json", mime="application/json")
 
-        st.caption(
-            "Notes: You can resume a partial crawl using the sidebar 'Resume from checkpoint' loader, the 'Continue from saved state' button, or the main 'Resume' panel. Limits apply to additional work this run."
-        )
+        st.caption("Notes: You can resume a partial crawl using the sidebar 'Resume from checkpoint' loader, the 'Continue from saved state' button, or the main 'Resume' panel. Limits apply to additional work this run.")
     else:
         st.warning("No images found or crawl blocked. Try adjusting limits, enabling subdomains, or verifying the start URL.")
+
 
 
