@@ -1,27 +1,34 @@
-Website Image Licensing Audit — MVP (Streamlit)
+Website Image Licensing Audit — MVP
 
-Audit a website for images/graphics that may require licensing review.
-The app crawls a domain (respecting robots.txt), collects images from <img> and CSS background-image: url(...), flags likely stock/library sources, optionally extracts EXIF “Artist,” and exports a CSV/Excel report.
+This Streamlit app scans a website for images and flags items that may require licensing review. It collects images from <img> tags and CSS background-image URLs, checks for stock-library domains, optionally extracts EXIF metadata ("Artist"), and provides quick reverse‑image search links.
 
 ✨ Features
 
-Same‑domain crawl with depth & page limits
+Same‑site crawl (respects robots.txt).
 
-Image extraction from HTML and linked CSS
+Finds images in <img> tags and (optionally) in inline/linked CSS background-image rules.
 
-Stock/library domain heuristics (Shutterstock, Getty, Adobe Stock, iStock, Unsplash, Pexels, Pixabay, etc.)
+Stock‑domain hinting: marks images hosted on common stock sites (Shutterstock, Getty, Adobe Stock, iStock, Pexels, Pixabay, etc.).
 
-Optional EXIF/IPTC “Artist” extraction (size‑capped)
+Optional EXIF read (EXIF tag 315: Artist).
 
-Reverse‑image quick links (Google Images / TinEye)
+Reverse‑image helpers: one‑click links to Google Images and TinEye (no scraping).
 
-Filters (stock‑only, risk‑only, search)
+Adjustable crawl depth, concurrency, and resource limits.
 
-CSV/Excel export
+Clickable links in‑app via table link columns.
 
-Passcode gate (optional) via Streamlit Secrets
+Export CSV and Excel (Excel outputs true hyperlinks).
 
-📦 Requirements
+Passcode gate using Streamlit Secrets or env var.
+
+Checkpoint resume: continue a partial crawl later (saved in session with optional downloadable checkpoint).
+
+Note: The MVP doesn’t execute JavaScript, so images loaded dynamically by client‑side code may not be discovered.
+
+🧱 Requirements
+
+Add this to requirements.txt:
 
 streamlit==1.37.1
 requests>=2.31.0
@@ -31,179 +38,204 @@ tldextract>=5.1.2
 Pillow>=10.4.0
 xlsxwriter>=3.2.0
 
-These are already listed in requirements.txt. No additional packages are required for the MVP. (Optional: requests-file>=1.5.1 if you wish to allow tldextract to refresh the public suffix list from the network.)
+All other imports are from the Python standard library.
 
-🚀 Quick Start (Local)
+▶️ Run Locally
 
-git clone https://github.com/<you>/image-licensing-audit.git
-cd image-licensing-audit
+Clone the repo
+
+git clone https://github.com/<your-org>/<your-repo>.git
+cd <your-repo>
+
+Install dependencies
+
 pip install -r requirements.txt
+
+(Optional) Set a passcode (choose one):
+
+export APP_PASSCODE="your-passcode"  # macOS/Linux
+# setx APP_PASSCODE your-passcode    # Windows (new shell after this)
+
+Run the app
+
 streamlit run app.py
 
-Open the local URL shown in your terminal.
+Open the local URL shown in terminal. If a passcode is set, enter it to unlock.
 
 ☁️ Deploy on Streamlit Cloud
 
-Push this repo to GitHub.
+Push the repo to GitHub.
 
-Go to share.streamlit.io → New app.
+In Streamlit Cloud, New app → pick your repo/branch and point Main file to app.py.
 
-Select the repo & branch, set Main file path to app.py.
+Secrets (gear icon → Secrets): add
 
-Deploy and share the URL with staff.
+APP_PASSCODE="your-passcode"
 
-No API keys are required for the MVP. If you later add a reverse‑image API (TinEye/Bing Visual Search), store keys in Secrets.
+(If you skip this, the app runs without a passcode.)
 
-🔒 Optional Passcode Gate (recommended)
+Deploy.
 
-Add a lightweight passcode check for staff‑only access.
+🔧 How to Use
 
-1) Set a secret on Streamlit Cloud
+Start URL: paste the site’s homepage or a deep page within the site.
 
-App → ⋮ > Settings > Secrets:
+Scope & Depth:
 
-APP_PASSCODE = "yourpasscode"
+Include subdomains — off by default. Turn on for multi‑subdomain sites.
 
-2) Code snippet (already included near the top of app.py)
+Max crawl depth — typical 2–3 for MVP.
 
-PASSCODE = st.secrets.get("APP_PASSCODE") or os.getenv("APP_PASSCODE")
-if PASSCODE:  # only enforce if configured
-    user_code = st.text_input("Enter passcode", type="password")
-    if user_code != PASSCODE:
-        st.stop()
+Limits (safety valves):
 
-If the secret is unset, the gate is automatically disabled (useful for dev branches).
+Max pages / Max images — caps the run (session‑scoped).
 
-🧭 How to Use
+Per‑page image cap — stop collecting more than N images per page.
 
-Enter the Start URL (e.g., https://example.com).
+Per‑image size cap (MB) & Total download cap (MB) — throttles bytes fetched for EXIF/thumbs.
 
-In the sidebar, configure:
+Fetch Policy:
 
-Include subdomains (off by default)
+Concurrency and Base delay (ms) — be polite; increase delay if the site is rate‑limited.
 
-Max crawl depth (default 3)
+Features:
 
-Max pages (default 100)
+Capture CSS background images — finds background-image: url(...) in inline styles and linked CSS.
 
-Max images (default 1,000)
+Attempt EXIF/IPTC — reads EXIF Artist if the file has EXIF and you’ve allowed bytes to be fetched.
 
-Per‑page image cap (default 50)
+Show thumbnails — displays small previews in the results table (more bytes; respects caps).
 
-Per‑image size cap (MB) (default 5)
+Click Run Audit.
 
-Total download cap (MB) (default 200)
+Results Table
 
-Concurrency (default 5) and Base delay (ms) (default 300)
+Columns include Page, Image URL, Source Type (IMG/CSS), Alt Text, Domain, Guessed Source, Content‑Type, Estimated Bytes, EXIF Artist, Width/Height (if available), reverse‑image links, Notes, and Risk Flags.
 
-Capture CSS backgrounds (on), Attempt EXIF/IPTC (on), Show thumbnails (off)
+Links are clickable in the app. Use the sidebar Results Filters to narrow by stock/library, risk flags, or text search.
 
-Power user (optional) to lift caps (use with caution)
+Risk Flags (MVP)
 
-Click Run Audit. You can Stop any time.
+Stock source — ensure license (image hosted on a known stock domain)
 
-Filter results and Download CSV/Excel.
+No alt text (check provenance) (for <img> where alt is missing)
 
-🔧 Default Limits (MVP)
+These are heuristic hints, not legal determinations. Use them to prioritize manual checks.
 
-Scope: same registrable domain.
+🔁 Resuming a Crawl
 
-Depth: 3 levels from the start page.
+The app saves in‑session state automatically. If you re‑run and see the Resumable state banner, you can:
 
-Max pages: 100 (hard cap 300).
+Resume where I left off from the main banner, or
 
-Max images: 1,000 (hard cap 2,000).
+Use Continue from saved state in the sidebar.
 
-Per‑page cap: 50 images.
+Checkpoint file: Download a JSON checkpoint from the results screen to resume later or on another machine.
 
-Per‑image size cap: 5 MB.
+Load it via Resume / Checkpoint → Load checkpoint.
 
-Total download cap: 200 MB.
+When resuming, the sliders for pages/images/bytes act as additional limits for this run (delta, not totals).
 
-Concurrency: 5 threads.
+📤 Exporting
 
-Delay: 300 ms base between requests.
+CSV: simple text; link clickability depends on your viewer.
 
-CSS backgrounds: enabled.
+Excel: includes true hyperlinks in Page, Image URL, Google Images, TinEye columns.
 
-EXIF: enabled (subject to size caps).
+🤝 Robots & Ethics
 
-These are adjustable via sidebar sliders.
+The crawler respects robots.txt via urllib.robotparser. If the start URL is disallowed, the app aborts.
 
-✅ What Gets Flagged
+Keep concurrency modest and add delay, especially on smaller sites.
 
-Images hosted on known stock/library domains → “Stock source — ensure license.”
+Use only on sites you own/manage or have permission to audit.
 
-Missing alt text → “No alt text (check provenance).”
+🧩 Troubleshooting
 
-Quick links are provided to Google Images & TinEye (no scraping of results).
+No passcode prompt: ensure APP_PASSCODE is set in Secrets (Streamlit Cloud) or as an environment variable locally.
 
-🧱 Limitations (by design for MVP)
+Blocked crawl: check robots.txt and reduce depth, concurrency, or enable Include subdomains.
 
-No headless browser: JS‑inserted images on heavy SPA frameworks may be missed. (Future: Playwright/Selenium add‑on.)
+Few/No images: the site may use JS‑loaded assets (MVP doesn’t execute JS). Try enabling CSS captures.
 
-robots.txt respected: Disallowed paths/assets aren’t fetched.
+No EXIF/Width/Height: the image format may not carry EXIF, or size caps prevented fetching bytes.
 
-Reverse search: Click‑out links only. Use official APIs if you want automated matching.
+Hit limits: increase sliders and re‑run, or use the resume workflow.
 
-🧩 Roadmap (optional enhancements)
+📄 License & Credits
 
-Sitemap‑first crawling
+This tool provides heuristics to aid licensing review. It is not legal advice. Confirm rights before using any asset.
 
-Job history & scheduled re‑scans
+Stock domain list is non‑exhaustive and may need updates per organization.
 
-Auth/SSO and per‑user run logs
+Staff How‑To (One‑Pager)
 
-TinEye/Bing Visual Search API auto‑annotation
+Purpose: Quickly scan a site you manage for images that might need a licensing check.
 
-Trademark/celebrity/logo detection heuristics
+1) Access
 
-Org multi‑tenant mode & shared reports
+Go to the Streamlit app URL. Enter the passcode if prompted (ask your admin if you don’t have it).
 
-🛟 Troubleshooting
+2) Run a Scan
 
-“No images found.”
+Paste the Start URL (usually the homepage).
 
-Verify the URL is correct and public.
+Leave Include subdomains off at first; increase Max crawl depth to 2–3.
 
-Increase Max pages/Depth, enable Include subdomains.
+Keep default Limits; you can raise them later.
 
-Ensure robots.txt allows crawling of pages and CSS.
+Under Features:
 
-Run stops early.
+Start with EXIF on.
 
-You likely hit pages/images/bytes caps. Raise limits or enable Power user (use with caution).
+Turn on CSS backgrounds only if you need to catch hero/section backgrounds (may include fonts/gradients, some noise).
 
-EXIF not appearing.
+Turn on Thumbnails if you want previews (uses more data; slower).
 
-Many images are stripped of EXIF. Also check size caps and total byte cap.
+Click Run Audit.
 
-Dynamic content missing.
+3) Review Results
 
-The MVP doesn’t execute JS. Consider a Playwright add‑on for SPA sites.
+Use Show likely stock/library only to focus on stock‑hosted images.
 
-🔒 Legal & Ethics
+Use Show rows with risk flags to focus review.
 
-Respect each site’s robots.txt and Terms of Service.
+Use Search to filter by URL, page, alt text, or domain.
 
-This tool flags licensing risks; it does not determine legal status. Final review is a human decision.
+Click Google Images / TinEye per row to do a quick provenance check.
 
-Handle exported reports per your organization’s privacy policy.
+4) Export & Share
 
-🏷️ License
+Click Download Excel for a spreadsheet with clickable links.
 
-MIT (or update to your preferred license).
+Share the file with legal/brand/creative teams for follow‑up.
 
-📁 Repo Structure
+5) Resume Later
 
-.
-├─ app.py                # Streamlit app (executable code only)
-├─ requirements.txt
-├─ README.md             # This document
-└─ Staff_How_To.pdf      # Optional one‑pager for staff
+If you hit limits, raise them and click Continue from saved state.
 
-🙋 Support / Contributions
+Or download a checkpoint and re‑load it another day.
 
-Open an issue or PR with a clear description and steps to reproduce.
+6) What do Risk Flags mean?
 
-For feature requests, note whether it should remain MVP‑light or be a “pro” upgrade (API integrations, auth, scheduling, etc.).
+Stock source — ensure license: hosted on a known stock domain (confirm you have a license).
+
+No alt text (check provenance): missing alt on an <img> tag; not proof of misuse, but worth verifying.
+
+7) Good Citizen Tips
+
+Avoid running with very high concurrency or no delay on small/fragile sites.
+
+Respect your organization’s policies and any site’s terms of use.
+
+Changelog (MVP)
+
+Passcode gate using APP_PASSCODE secret/env.
+
+Resume banner + checkpoint import/export.
+
+Clickable links in app + Excel hyperlink export.
+
+Optional CSS background scanning.
+
+EXIF Artist extraction; optional thumbnails.
