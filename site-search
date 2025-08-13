@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import requests
 from urllib.parse import urljoin, urlparse
@@ -8,13 +9,27 @@ import pandas as pd
 import tldextract
 import time
 from io import BytesIO
-import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image, UnidentifiedImageError
 
-# ==========================
+# ==========================================
+# Website Image Licensing Audit — MVP (app)
+# ==========================================
+# NOTE: README content must live in README.md, not inside this file.
+# This file contains only executable Streamlit code.
+
+# --------------------------
+# Optional passcode gate
+# --------------------------
+PASSCODE = st.secrets.get("APP_PASSCODE") or os.getenv("APP_PASSCODE")
+if PASSCODE:  # Only enforce if configured
+    user_code = st.text_input("Enter passcode", type="password")
+    if user_code != PASSCODE:
+        st.stop()
+
+# --------------------------
 # App Config & Constants
-# ==========================
+# --------------------------
 st.set_page_config(page_title="Website Image Licensing Audit (MVP)", layout="wide")
 st.title("🕵️ Website Image Licensing Audit — MVP")
 
@@ -31,9 +46,9 @@ STOCK_DOMAINS = {
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 URL_IN_CSS = re.compile(r"url\(([^)]+)\)")
 
-# ==========================
+# --------------------------
 # Sidebar Controls
-# ==========================
+# --------------------------
 with st.sidebar:
     st.header("Settings")
     start_url = st.text_input("Start URL", placeholder="https://example.com")
@@ -68,7 +83,6 @@ with st.sidebar:
     power = st.checkbox("Enable power-user mode (lifts caps, use cautiously)", value=False)
     if power:
         st.info("Power user mode enabled. Be respectful of target sites and your Streamlit resource limits.")
-        # Lift some caps visually (actual caps governed by the sliders above)
 
     go = st.button("Run Audit", type="primary")
     stop = st.button("Stop")
@@ -79,17 +93,9 @@ if "_stop" not in st.session_state:
 if stop:
     st.session_state._stop = True
 
-# ==========================
+# --------------------------
 # Helpers
-# ==========================
-
-def normalized(url: str) -> str:
-    try:
-        u = url.strip().strip('"\'')
-        return u
-    except Exception:
-        return url
-
+# --------------------------
 
 def same_scope(url: str, root: str, include_subs: bool) -> bool:
     try:
@@ -124,8 +130,7 @@ def get_robots_session(base_url: str):
 def polite_get(session: requests.Session, url: str, delay_ms: int, timeout: int = 15):
     time.sleep(delay_ms / 1000.0)
     try:
-        resp = session.get(url, timeout=timeout)
-        return resp
+        return session.get(url, timeout=timeout)
     except Exception:
         return None
 
@@ -242,10 +247,9 @@ def try_make_thumb(img_bytes: BytesIO):
     except (UnidentifiedImageError, OSError):
         return None
 
-# ==========================
+# --------------------------
 # Main Audit Logic
-# ==========================
-
+# --------------------------
 if go:
     st.session_state._stop = False
 
@@ -254,9 +258,6 @@ if go:
         st.stop()
 
     rp, session = get_robots_session(start_url)
-
-    parsed_root = urlparse(start_url)
-    base_origin = f"{parsed_root.scheme}://{parsed_root.netloc}"
 
     # Robots check for start page
     if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], start_url):
@@ -306,7 +307,7 @@ if go:
         html = resp.text
         page_imgs, css_links = extract_img_links_from_html(url, html, per_page_img_cap)
 
-        # Add CSS links to queue for later fetch
+        # Queue CSS files to parse for background images
         if parse_css_backgrounds:
             for css in css_links:
                 if same_scope(css, start_url, include_subdomains):
@@ -316,8 +317,7 @@ if go:
         soup = BeautifulSoup(html, 'html.parser')
         for a in soup.find_all('a', href=True):
             href = urljoin(url, a['href'])
-            # Clean fragment
-            href = href.split('#')[0]
+            href = href.split('#')[0]  # strip fragments
             if not same_scope(href, start_url, include_subdomains):
                 continue
             if href not in visited_pages and href not in depth:
@@ -325,9 +325,8 @@ if go:
                 if d + 1 <= depth_max:
                     q.append(href)
 
-        # Process page images
-        # We will HEAD concurrently to estimate sizes/content-types
-        to_process = list({u for (u, _, _) in page_imgs if file_ext(u) or True})  # keep all; ext check later
+        # HEAD concurrently to estimate sizes/content-types
+        to_process = list({u for (u, _, _) in page_imgs})
         results = []
         with ThreadPoolExecutor(max_workers=concurrency) as ex:
             futs = {ex.submit(head_size, session, u): u for u in to_process}
@@ -338,9 +337,7 @@ if go:
 
         # Build rows
         for (u, stype, alt) in page_imgs:
-            if images_found >= max_images:
-                break
-            if st.session_state._stop:
+            if images_found >= max_images or st.session_state._stop:
                 break
 
             ext = file_ext(u)
@@ -351,48 +348,36 @@ if go:
             # Size from HEAD (if available)
             match = next((r for r in results if r[0] == u), None)
             est_bytes = match[1] if match else None
-            content_type = match[2] if match else ''
+            content_type_img = match[2] if match else ''
 
             size_ok = True
+            note = ""
             if est_bytes is not None and est_bytes > per_image_size_mb * 1024 * 1024:
                 size_ok = False
                 note = "Skipped (exceeds per-image size cap)"
-            else:
-                note = ""
 
-            thumb_b64 = None
             exif_author = ""
 
-            # Optional EXIF + thumbnail if size OK and content looks like an image
-            if try_exif and size_ok and (content_type.startswith("image/") or ext in IMG_EXTS):
-                # Respect total bytes cap
+            # Optional EXIF if size OK and looks like an image
+            if try_exif and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS):
                 if total_bytes_downloaded < total_bytes_cap_mb * 1024 * 1024:
-                    # Download up to per-image cap
                     buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                     total_bytes_downloaded += n
                     if buf:
-                        # EXIF
                         try:
                             with Image.open(buf) as im:
                                 exif = im.getexif()
                                 if exif:
-                                    # Common Artist tag 315
-                                    artist = exif.get(315)
+                                    artist = exif.get(315)  # Artist tag
                                     if artist:
                                         exif_author = str(artist)
                         except (UnidentifiedImageError, OSError):
                             pass
-                        # Thumbnail if requested
-                        if show_thumbs:
-                            thumb = try_make_thumb(buf)
-                            if thumb:
-                                # Streamlit can show image directly later
-                                pass
                 else:
                     note = (note + "; " if note else "") + "Skipped (hit total download cap)"
 
             risk = []
-            if domain_of(u) in STOCK_DOMAINS:
+            if dom in STOCK_DOMAINS:
                 risk.append("Stock source — ensure license")
             if not alt:
                 risk.append("No alt text (check provenance)")
@@ -404,7 +389,7 @@ if go:
                 "Alt Text": alt,
                 "Domain": dom,
                 "Guessed Source": source_guess,
-                "Content-Type": content_type,
+                "Content-Type": content_type_img,
                 "Estimated Bytes": est_bytes,
                 "EXIF Artist": exif_author,
                 "Google Images": g_link,
@@ -423,12 +408,12 @@ if go:
             status.info("Hit image limit. Stopping crawl.")
             break
 
-        # Fetch linked CSS files (lightweight)
+        # Fetch linked CSS files for background images
         if parse_css_backgrounds and css_queue and not st.session_state._stop:
-            new_css_queue = []
             with ThreadPoolExecutor(max_workers=min(concurrency, 4)) as ex:
                 futs = {ex.submit(polite_get, session, css_url, base_delay_ms): (page_url, css_url)
                         for (page_url, css_url) in css_queue}
+                css_queue = []  # clear; we process once
                 for fut in as_completed(futs):
                     page_url, css_url = futs[fut]
                     resp_css = fut.result()
@@ -439,10 +424,6 @@ if go:
                         if images_found >= max_images:
                             break
                         ext = file_ext(u)
-                        if ext == '':
-                            # keep anyway; might be image without extension
-                            pass
-                        # Use HEAD to evaluate size/content-type
                         size, ct = head_size(session, u)
                         size_ok = True
                         note = ""
@@ -487,17 +468,16 @@ if go:
                         images_found += 1
                         if images_found >= max_images:
                             break
-            css_queue = new_css_queue
 
-    # ==========================
+    # --------------------------
     # Results & Export
-    # ==========================
+    # --------------------------
     if rows:
         df = pd.DataFrame(rows)
         st.success(f"Audit complete: {pages_processed} page(s), {images_found} image(s).")
 
         # Quick filters
-        col1, col2, col3 = st.columns([1,1,2])
+        col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             only_stock = st.checkbox("Show likely stock/library only", value=False)
         with col2:
