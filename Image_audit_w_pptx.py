@@ -931,63 +931,60 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 else:
                     dfp = dfp[[not k for k in keep_mask]]
 
-           # Render table
-			st.dataframe(dfp, use_container_width=True, hide_index=True)
+            # Render table
+            st.dataframe(dfp, use_container_width=True, hide_index=True)
 
-			# Exports: CSV / Excel / ZIP of images
-			csv_bytes = dfp.to_csv(index=False).encode("utf-8")
+            # Exports: CSV / Excel / ZIP of images
+            csv_bytes = dfp.to_csv(index=False).encode("utf-8")
+
+            def _pptx_to_excel_bytes(df_: pd.DataFrame) -> bytes:
+                out = BytesIO()
+                with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+                    df_.to_excel(writer, sheet_name="PPTX Audit", index=False)
+                    # Optional niceties: set column widths based on content (capped)
+                    ws = writer.sheets["PPTX Audit"]
+                    for idx, col in enumerate(df_.columns):
+                        try:
+                            approx = int(min(max(12, df_[col].astype(str).str.len().quantile(0.9)), 60))
+                        except Exception:
+                            approx = 20
+                        ws.set_column(idx, idx, approx)
+                out.seek(0)
+                return out.read()
+
+            xlsx_bytes = _pptx_to_excel_bytes(dfp)
+
+            st.download_button(
+                "Download CSV (PPTX)",
+                data=csv_bytes,
+                file_name="pptx_image_audit.csv",
+                mime="text/csv",
+            )
+
+            st.download_button(
+                "Download Excel (PPTX)",
+                data=xlsx_bytes,
+                file_name="pptx_image_audit.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            # Package extracted images to a ZIP
+            if all_images:
+                zip_buf = BytesIO()
+                with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for name, data in all_images:
+                        zf.writestr(name, data)
+                zip_buf.seek(0)
+                st.download_button(
+                    "Download extracted images (ZIP)",
+                    data=zip_buf.getvalue(),
+                    file_name="pptx_images.zip",
+                    mime="application/zip",
+                )
+            else:
+                st.caption("No extractable images to package.")
+
+    elif run_pptx and not pptx_files:
+        st.warning("Please upload at least one .pptx file.")
 
 
-			def _pptx_to_excel_bytes(df_: pd.DataFrame) -> bytes:
-				out = BytesIO()
-				with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
-					df_.to_excel(writer, sheet_name="PPTX Audit", index=False)
-					# Optional niceties: set column widths based on content (capped)
-					ws = writer.sheets["PPTX Audit"]
-					for idx, col in enumerate(df_.columns):
-						try:
-							approx = int(min(max(12, df_[col].astype(str).str.len().quantile(0.9)), 60))
-						except Exception:
-							approx = 20
-						ws.set_column(idx, idx, approx)
-				out.seek(0)
-				return out.read()
-
-
-			xlsx_bytes = _pptx_to_excel_bytes(dfp)
-
-			st.download_button(
-				"Download CSV (PPTX)",
-				data=csv_bytes,
-				file_name="pptx_image_audit.csv",
-				mime="text/csv",
-			)
-
-			st.download_button(
-				"Download Excel (PPTX)",
-				data=xlsx_bytes,
-				file_name="pptx_image_audit.xlsx",
-				mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-			)
-
-			# Package extracted images to a ZIP
-			if all_images:
-				zip_buf = BytesIO()
-				with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-					for name, data in all_images:
-						zf.writestr(name, data)
-				zip_buf.seek(0)
-				st.download_button(
-					"Download extracted images (ZIP)",
-					data=zip_buf.getvalue(),
-					file_name="pptx_images.zip",
-					mime="application/zip",
-				)
-			else:
-				st.caption("No extractable images to package.")
-
-			# End of success branch. If user clicked scan without files, show a warning.
-			elif run_pptx and not pptx_files:
-				st.warning("Please upload at least one .pptx file.")
-
-			# --- End PowerPoint Image Licensing Audit (beta) block ---
