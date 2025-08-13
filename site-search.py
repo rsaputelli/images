@@ -27,11 +27,20 @@ st.set_page_config(page_title="Website Image Licensing Audit (MVP)", layout="wid
 # Optional passcode gate
 # --------------------------
 PASSCODE = st.secrets.get("APP_PASSCODE") or os.getenv("APP_PASSCODE")
-if PASSCODE:  # Only enforce if configured
-    user_code = st.text_input("Enter passcode", type="password")
-    if user_code != PASSCODE:
-        st.stop()
-
+if PASSCODE:
+    # Persist unlock state across reruns in this browser session
+    if not st.session_state.get("_authed", False):
+        with st.form("passcode_gate"):
+            user_code = st.text_input("Enter passcode", type="password")
+            submitted = st.form_submit_button("Unlock")
+        if submitted:
+            if (user_code or "").strip() == str(PASSCODE).strip():
+                st.session_state["_authed"] = True
+            else:
+                st.error("Invalid passcode.")
+        # If still not authed, stop before rendering any UI
+        if not st.session_state.get("_authed", False):
+            st.stop()
 # --------------------------
 # Title
 # --------------------------
@@ -526,4 +535,5 @@ if go:
         st.caption("Notes: Respect each site's robots.txt and terms. Reverse-image links open Google Images/TinEye with the image URL prefilled; results are not scraped.")
     else:
         st.warning("No images found or crawl blocked. Try adjusting limits, enabling subdomains, or verifying the start URL.")
+
 
