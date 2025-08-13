@@ -19,6 +19,11 @@ from PIL import Image, UnidentifiedImageError
 # This file contains only executable Streamlit code.
 
 # --------------------------
+# App Config & Constants
+# --------------------------
+st.set_page_config(page_title="Website Image Licensing Audit (MVP)", layout="wide")
+
+# --------------------------
 # Optional passcode gate
 # --------------------------
 PASSCODE = st.secrets.get("APP_PASSCODE") or os.getenv("APP_PASSCODE")
@@ -28,10 +33,13 @@ if PASSCODE:  # Only enforce if configured
         st.stop()
 
 # --------------------------
-# App Config & Constants
+# Title
 # --------------------------
-st.set_page_config(page_title="Website Image Licensing Audit (MVP)", layout="wide")
 st.title("🕵️ Website Image Licensing Audit — MVP")
+
+# --------------------------
+# Constants
+# --------------------------
 
 DEFAULT_HEADERS = {
     "User-Agent": "ImageLicenseAuditor/1.0 (+https://example.org; contact=webmaster@example.org)"
@@ -518,3 +526,4 @@ if go:
         st.caption("Notes: Respect each site's robots.txt and terms. Reverse-image links open Google Images/TinEye with the image URL prefilled; results are not scraped.")
     else:
         st.warning("No images found or crawl blocked. Try adjusting limits, enabling subdomains, or verifying the start URL.")
+
