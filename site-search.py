@@ -77,10 +77,6 @@ STOCK_DOMAINS = {
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 URL_IN_CSS = re.compile(r"url\(([^)]+)\)")
-STOCK_ID_RE = re.compile(
-    r"(shutterstock|adobestock|istock|istockphoto|gettyimages|depositphotos|dreamstime|alamy|123rf|bigstock|canstockphoto|pond5)[-_]?\d{4,}",
-    re.I,
-)
 
 if "crawl_state" not in st.session_state:
     st.session_state.crawl_state = None  # holds resumable state dict
@@ -130,7 +126,7 @@ with st.sidebar:
     base_delay_ms = st.slider("Base delay between requests (ms)", 0, 1000, 300, step=50)
 
     st.markdown("**Features**")
-    parse_css_backgrounds = st.checkbox("Capture CSS background images", value=False)
+    parse_css_backgrounds = st.checkbox("Capture CSS background images", value=True)
     try_exif = st.checkbox("Attempt EXIF/IPTC (≤ size cap)", value=True)
     show_thumbs = st.checkbox("Show thumbnails (may be slow)", value=False)
 
@@ -149,15 +145,6 @@ with st.sidebar:
     load_clicked = st.button("Load checkpoint")
     cont_clicked = st.button("Continue from saved state") if st.session_state.get("crawl_state") else False
     reset_clicked = st.button("Reset saved state") if st.session_state.get("crawl_state") else False
-
-    st.markdown("**Risk Heuristics**")
-    flag_large = st.checkbox("Flag very large images", value=True)
-    large_px = st.number_input("Large if width or height ≥ (px)", min_value=1000, max_value=10000, value=3840, step=100)
-    large_mb = st.number_input("Large if file size ≥ (MB)", min_value=1, max_value=50, value=5, step=1)
-    flag_suspicious = st.checkbox("Flag suspicious filenames (stock IDs)", value=True)
-    flag_offdomain = st.checkbox("Flag hotlinked off-domain assets", value=True)
-    brand_terms_raw = st.text_input("Brand/trademark terms (comma-separated)", value="")
-    flag_brand = st.checkbox("Flag if URL/alt matches brand terms", value=True)
 
     go = st.button("Run Audit", type="primary")
     stop = st.button("Stop")
@@ -401,12 +388,6 @@ if go:
         resuming_now = False
 
     rp, session = get_robots_session(start_url)
-# Root registrable domain for hotlink heuristic
-root_regdomain = tldextract.extract(start_url).registered_domain
-
-# Prepare brand terms list once
-brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if t.strip()]
-
 
     if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], start_url):
         st.warning("robots.txt disallows crawling the start URL. Aborting.")
@@ -501,21 +482,18 @@ brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if 
             thumb_data = None
             width = None
             height = None
-
-            # Auto-enable EXIF whenever thumbnails are on
-            effective_try_exif = (try_exif or show_thumbs)
-            need_fetch = (effective_try_exif or show_thumbs) and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS)
-
+            # Download bytes if needed for EXIF and/or thumbnails
+            need_fetch = (try_exif or show_thumbs) and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS)
             if need_fetch:
                 if added_bytes() < total_bytes_cap_mb * 1024 * 1024:
                     buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                     total_bytes_downloaded += n
                     if buf:
-                        if effective_try_exif:
+                        if try_exif:
                             try:
                                 with Image.open(buf) as im:
-                                    width, height = im.size
-                                    exif = im.getexif()
+                            width, height = im.size
+                            exif = im.getexif()
                                     if exif:
                                         artist = exif.get(315)
                                         if artist:
@@ -523,48 +501,17 @@ brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if 
                             except (UnidentifiedImageError, OSError):
                                 pass
                         if show_thumbs:
-                            try:
-                                buf.seek(0)
-                            except Exception:
-                                pass
                             thumb = try_make_thumb(buf)
                             if thumb:
                                 thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
                 else:
                     note = (note + "; " if note else "") + "Skipped (hit additional download cap this run)"
 
-
             risk = []
             if dom in STOCK_DOMAINS:
                 risk.append("Stock source — ensure license")
             if not alt:
                 risk.append("No alt text (check provenance)")
-            # ---- Risk heuristics ----
-            risk = []
-            # Very large by file size
-            if flag_large and (est_bytes is not None) and est_bytes >= int(large_mb) * 1024 * 1024:
-                risk.append(f"Very large file (≥ {int(large_mb)} MB)")
-            # Very large by dimensions (if we have them)
-            if flag_large and width and height and (width >= int(large_px) or height >= int(large_px)):
-                risk.append(f"Very large dimensions ({width}×{height} px)")
-            # Suspicious stock-ID filename
-            if flag_suspicious:
-                try:
-                    pth = urlparse(u).path.lower()
-                except Exception:
-                    pth = ""
-                if pth and STOCK_ID_RE.search(pth):
-                    risk.append("Suspicious stock ID in filename")
-            # Off-domain hotlink (not the same registrable domain as the start URL)
-            if flag_offdomain and dom and root_regdomain and dom != root_regdomain:
-                risk.append("Off-domain asset (hotlink)")
-            # Brand/trademark term matches
-            if flag_brand and brand_terms:
-                hay = (u + " " + (alt or "")).lower()
-                for term in brand_terms:
-                    if term and term in hay:
-                        risk.append(f"Brand term match: {term}")
-                        break
 
             rows.append({
                 "Page": url,
@@ -621,17 +568,15 @@ brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if 
                             note = "Skipped (exceeds per-image size cap)"
                         exif_author = ""
                         thumb_data = None
+                        width = None
+                        height = None
                         need_fetch = (try_exif or show_thumbs) and size_ok and (ct.startswith("image/") or ext in IMG_EXTS)
-                        
-                        effective_try_exif = (try_exif or show_thumbs)
-                        need_fetch = (effective_try_exif or show_thumbs) and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS)
-
                         if need_fetch:
                             if added_bytes() < total_bytes_cap_mb * 1024 * 1024:
                                 buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                                 total_bytes_downloaded += n
                                 if buf:
-                                    if effective_try_exif:
+                                    if try_exif:
                                         try:
                                             with Image.open(buf) as im:
                                                 width, height = im.size
@@ -643,16 +588,11 @@ brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if 
                                         except (UnidentifiedImageError, OSError):
                                             pass
                                     if show_thumbs:
-                                        try:
-                                            buf.seek(0)
-                                        except Exception:
-                                            pass
                                         thumb = try_make_thumb(buf)
                                         if thumb:
                                             thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
                             else:
                                 note = (note + "; " if note else "") + "Skipped (hit additional download cap this run)"
-
 
                         g_link, t_link = reverse_links(u)
                         dom = domain_of(u)
@@ -785,15 +725,6 @@ brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if 
             "base_delay_ms": base_delay_ms,
             "parse_css_backgrounds": parse_css_backgrounds,
             "try_exif": try_exif,
-            "show_thumbs": show_thumbs,
-            "flag_large": flag_large,
-            "large_px": int(large_px),
-            "large_mb": int(large_mb),
-            "flag_suspicious": flag_suspicious,
-            "flag_offdomain": flag_offdomain,
-            "flag_brand": flag_brand,
-            "brand_terms_raw": brand_terms_raw,
-
         }
         cp_dict = make_checkpoint_dict(st.session_state.crawl_state, settings)
         cp_bytes = json.dumps(cp_dict).encode('utf-8')
@@ -804,4 +735,5 @@ brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if 
         )
     else:
         st.warning("No images found or crawl blocked. Try adjusting limits, enabling subdomains, or verifying the start URL.")
+
 
