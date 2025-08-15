@@ -54,6 +54,7 @@ with header_right:
 
 PASSCODE = st.secrets.get("APP_PASSCODE") if hasattr(st, "secrets") else None
 PASSCODE = PASSCODE or os.getenv("APP_PASSCODE")
+
 if PASSCODE:
     if not st.session_state.get("_authed", False):
         with st.form("passcode_gate"):
@@ -62,14 +63,17 @@ if PASSCODE:
         if submitted:
             if (user_code or "").strip() == str(PASSCODE).strip():
                 st.session_state["_authed"] = True
+                # Instant refresh so the app shows up without a second click
+                st.rerun()  # use st.experimental_rerun() on older Streamlit
             else:
                 st.error("Invalid passcode.")
         if not st.session_state.get("_authed", False):
             st.stop()
-# ✅ Sidebar logo only after auth (or if no passcode configured)
-if _logo_path:
-    # Use a fixed width to avoid the earlier issue
+
+# ✅ Optional: show sidebar logo only after auth (if you still want it)
+if _logo_path and (not PASSCODE or st.session_state.get("_authed", False)):
     st.sidebar.image(_logo_path, width=180)
+
     
 # --------------------------
 # Quick Resume Banner
@@ -1209,6 +1213,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
