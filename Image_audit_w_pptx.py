@@ -961,9 +961,19 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 else:
                     dfp = dfp[[not k for k in keep_mask]]
 
-            # Render table
-            st.dataframe(dfp, use_container_width=True, hide_index=True)
-
+            # Render table (make Hyperlink clickable)
+            col_cfg = {}
+            if "Hyperlink" in dfp.columns:
+                col_cfg["Hyperlink"] = st.column_config.LinkColumn("Hyperlink")
+            
+            st.data_editor(
+                dfp,
+                use_container_width=True,
+                hide_index=True,
+                disabled=True,
+                column_config=col_cfg,
+            )
+            
             # Exports: CSV / Excel / ZIP of images
             csv_bytes = dfp.to_csv(index=False).encode("utf-8")
 
@@ -971,14 +981,24 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 out = BytesIO()
                 with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
                     df_.to_excel(writer, sheet_name="PPTX Audit", index=False)
-                    # Optional niceties: set column widths based on content (capped)
                     ws = writer.sheets["PPTX Audit"]
+            
+                    # Optional niceties: set column widths based on content (capped)
                     for idx, col in enumerate(df_.columns):
                         try:
                             approx = int(min(max(12, df_[col].astype(str).str.len().quantile(0.9)), 60))
                         except Exception:
                             approx = 20
                         ws.set_column(idx, idx, approx)
+            
+                    # ✅ Convert the "Hyperlink" column to real Excel hyperlinks
+                    if "Hyperlink" in df_.columns:
+                        hcol = df_.columns.get_loc("Hyperlink")
+                        # Data rows start at Excel row index 1 (row 0 is header)
+                        for r, val in enumerate(df_["Hyperlink"].astype(str).tolist()):
+                            if val.startswith(("http://", "https://")):
+                                ws.write_url(r + 1, hcol, val, string=val)
+            
                 out.seek(0)
                 return out.read()
 
@@ -1016,6 +1036,7 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
 
     elif run_pptx and not pptx_files:
         st.warning("Please upload at least one .pptx file.")
+
 
 
 
