@@ -28,7 +28,27 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 # --------------------------
 # App Config & Passcode Gate
 # --------------------------
-st.set_page_config(page_title="Website Image Licensing Audit (MVP)", layout="wide")
+# === Branding header ===
+header_left, header_right = st.columns([3, 8])   # wider left column
+
+def _find_logo():
+    for p in ("assets/logo.png", "logo.png"):
+        if os.path.exists(p):
+            return p
+    return None
+
+with header_left:
+    _logo = _find_logo()
+    if _logo:
+        st.image(_logo, width=220)
+    else:
+        st.caption("(logo not found: assets/logo.png or logo.png)")
+with header_right:
+    st.markdown("## Website and PPTX Image Licensing Audit - MVP")
+	
+# Optional: sidebar logo
+if _find_logo():
+    st.sidebar.image(_find_logo(), use_container_width=True)
 
 PASSCODE = st.secrets.get("APP_PASSCODE") or os.getenv("APP_PASSCODE")
 if PASSCODE:
@@ -43,8 +63,6 @@ if PASSCODE:
                 st.error("Invalid passcode.")
         if not st.session_state.get("_authed", False):
             st.stop()
-
-st.title("🕵️ Website Image Licensing Audit — MVP")
 
 # --------------------------
 # Quick Resume Banner
@@ -986,5 +1004,6 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
 
     elif run_pptx and not pptx_files:
         st.warning("Please upload at least one .pptx file.")
+
 
 
