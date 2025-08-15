@@ -52,10 +52,6 @@ with header_left:
 with header_right:
     st.markdown("## Website and PPTX Image Licensing Audit - MVP")
 
-# Optional: sidebar logo
-if _logo_path:
-    st.sidebar.image(_logo_path, use_container_width=True)
-
 PASSCODE = st.secrets.get("APP_PASSCODE") if hasattr(st, "secrets") else None
 PASSCODE = PASSCODE or os.getenv("APP_PASSCODE")
 if PASSCODE:
@@ -70,7 +66,11 @@ if PASSCODE:
                 st.error("Invalid passcode.")
         if not st.session_state.get("_authed", False):
             st.stop()
-
+# ✅ Sidebar logo only after auth (or if no passcode configured)
+if _logo_path:
+    # Use a fixed width to avoid the earlier issue
+    st.sidebar.image(_logo_path, width=180)
+    
 # --------------------------
 # Quick Resume Banner
 # --------------------------
@@ -1016,6 +1016,7 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
 
     elif run_pptx and not pptx_files:
         st.warning("Please upload at least one .pptx file.")
+
 
 
 
