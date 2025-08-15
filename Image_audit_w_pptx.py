@@ -13,12 +13,16 @@ import time
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image, UnidentifiedImageError
+from typing import Optional  # <-- for a safe return type in Python 3.9+
 
 # NEW: PowerPoint audit deps
 import hashlib
 import zipfile
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+# (Optional, but nice)
+st.set_page_config(page_title="Website & PPTX Image Licensing Audit", layout="wide")
 
 # ==========================================
 # Website Image Licensing Audit — MVP (app)
@@ -29,28 +33,31 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 # App Config & Passcode Gate
 # --------------------------
 # === Branding header ===
-header_left, header_right = st.columns([3, 8])   # wider left column
 
-def _find_logo():
+def _find_logo() -> Optional[str]:
     for p in ("assets/logo.png", "logo.png"):
         if os.path.exists(p):
             return p
     return None
 
+_logo_path = _find_logo()
+
+header_left, header_right = st.columns([3, 8])  # wider left column
 with header_left:
-    _logo = _find_logo()
-    if _logo:
-        st.image(_logo, width=220)
+    if _logo_path:
+        # Increase width here to control header logo size
+        st.image(_logo_path, width=220)
     else:
         st.caption("(logo not found: assets/logo.png or logo.png)")
 with header_right:
     st.markdown("## Website and PPTX Image Licensing Audit - MVP")
-	
-# Optional: sidebar logo
-if _find_logo():
-    st.sidebar.image(_find_logo(), use_container_width=True)
 
-PASSCODE = st.secrets.get("APP_PASSCODE") or os.getenv("APP_PASSCODE")
+# Optional: sidebar logo
+if _logo_path:
+    st.sidebar.image(_logo_path, use_container_width=True)
+
+PASSCODE = st.secrets.get("APP_PASSCODE") if hasattr(st, "secrets") else None
+PASSCODE = PASSCODE or os.getenv("APP_PASSCODE")
 if PASSCODE:
     if not st.session_state.get("_authed", False):
         with st.form("passcode_gate"):
@@ -73,6 +80,7 @@ if st.session_state.get("crawl_state"):
     _pp = int((_cs or {}).get("pages_processed", 0))
     _im = int((_cs or {}).get("images_found", 0))
     _dom = urlparse(_su).netloc if _su else ""
+    # If your Streamlit version doesn't support border=True, remove it.
     with st.container(border=True):
         st.write(f"**Resumable state detected** for `{_dom}` — total pages: {_pp}, total images: {_im}.")
         st.caption("When resuming, slider limits apply to **additional** pages/images/bytes for this run.")
@@ -340,7 +348,7 @@ def fetch_bytes(session: requests.Session, url: str, max_bytes: int):
     except Exception:
         return None, 0
 
-def try_make_thumb(img_bytes: BytesIO, max_px: int = 128) -> BytesIO | None:
+def try_make_thumb(img_bytes: BytesIO, max_px: int = 128) -> Optional[BytesIO]:
     try:
         with Image.open(img_bytes) as im:
             im = im.convert("RGB") if im.mode not in ("RGB", "RGBA") else im
@@ -369,6 +377,10 @@ def make_checkpoint_dict(state: dict, settings: dict) -> dict:
 # --------------------------
 # Main Audit Logic (with resume/delta limits)
 # --------------------------
+# (UNCHANGED below this point except for any incidental whitespace fixes)
+if 'go' not in globals():
+    go = False
+
 if go:
     st.session_state._stop = False
 
@@ -624,7 +636,7 @@ if go:
                                                 width, height = im.size
                                                 exif = im.getexif()
                                                 if exif:
-                                                    artist = exif.get(315)
+                                                    artist = im.getexif().get(315)
                                                     if artist:
                                                         exif_author = str(artist)
                                         except (UnidentifiedImageError, OSError):
