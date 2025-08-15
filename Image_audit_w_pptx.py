@@ -818,9 +818,6 @@ if go:
 # ==========================================
 # PowerPoint Image Licensing Audit (Beta)
 # ==========================================
-# This section scans uploaded .pptx files for embedded images and flags potential licensing risks.
-# It does not execute JS or follow remote URLs; images are extracted from the PPTX package.
-
 with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False):
     with st.form("pptx_form"):
         pptx_files = st.file_uploader("Upload one or more PowerPoint files (.pptx)", type=["pptx"], accept_multiple_files=True)
@@ -831,9 +828,66 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
         pptx_dedupe = st.checkbox("Deduplicate by image content (SHA-1)", value=True, key="pptx_dedupe")
         run_pptx = st.form_submit_button("Scan PPTX")
 
+    URL_RE = re.compile(r'https?://[^\s<>()"]+')
+    MEDIA_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'}
+    MEDIA_VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
+    MEDIA_VIDEO_DOMAINS = {'youtube.com', 'youtu.be', 'vimeo.com', 'player.vimeo.com'}
+
+    def _classify_media_url(u: str) -> str:
+        """Return 'image', 'video', or '' if not a media URL."""
+        try:
+            p = urlparse(u)
+            path = (p.path or '').lower()
+            host = (p.netloc or '').lower()
+        except Exception:
+            path, host = "", ""
+        if any(path.endswith(ext) for ext in MEDIA_IMAGE_EXTS):
+            return "image"
+        if any(path.endswith(ext) for ext in MEDIA_VIDEO_EXTS):
+            return "video"
+        if any(d in host for d in MEDIA_VIDEO_DOMAINS):
+            return "video"
+        return ""
+
+    def _extract_text_media_from_slide(slide, slide_idx: int, filename: str):
+        """Collect only media-like URLs (images/videos) from text boxes, mark kind and keep clickable link."""
+        rows = []
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            try:
+                txt = shape.text or ""
+            except Exception:
+                txt = ""
+            for m in URL_RE.findall(txt):
+                url = m.strip()
+                kind = _classify_media_url(url)
+                if not kind:  # skip non-media links to avoid noise
+                    continue
+                rows.append({
+                    "File": filename,
+                    "Slide": slide_idx,
+                    "Shape": getattr(shape, "name", ""),
+                    "Alt Text": "",
+                    "Hyperlink": "",             # reserved for on-picture link; leave empty here
+                    "External Media Link": url,  # clickable URL from text box
+                    "External Media Kind": kind, # image | video
+                    "Format": "text",
+                    "Content-Type": "",
+                    "Bytes": None,
+                    "Width": None,
+                    "Height": None,
+                    "EXIF Artist": "",
+                    "SHA1": "",
+                    "Google Images": "",  # reverse search not applicable to text-only references
+                    "TinEye": "",
+                    "Risk Flags": "",
+                })
+        return rows
+
     def _scan_pptx_bytes(buf_bytes, filename, brand_terms, large_px, large_mb):
         rows = []
-        images_for_zip = []  # list of (zip_name, bytes)
+        images_for_zip = []
         try:
             prs = Presentation(BytesIO(buf_bytes))
         except Exception:
@@ -844,7 +898,7 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
             shape_idx = 0
             for shape in slide.shapes:
                 shape_idx += 1
-                # Prefer picture shapes; fall back to has_image when available
+                # Picture detection
                 is_picture = False
                 try:
                     is_picture = (shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
@@ -852,13 +906,15 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     pass
                 if not is_picture and not getattr(shape, "has_image", False):
                     continue
+
+                # Extract embedded image
                 try:
                     img = shape.image
                 except Exception:
                     continue
                 blob = img.blob
                 sha1 = hashlib.sha1(blob).hexdigest()
-                fmt = getattr(img, "ext", None)  # e.g., 'jpeg'
+                fmt = getattr(img, "ext", None)
                 ctype = getattr(img, "content_type", "")
 
                 width = height = None
@@ -875,12 +931,15 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     pass
 
                 alt = getattr(shape, "alternative_text", "") or ""
+
+                # If the picture itself has a hyperlink
                 href = ""
                 try:
                     href = getattr(shape.click_action.hyperlink, "address", "") or ""
                 except Exception:
-                    pass
+                    href = ""
 
+                # Risk flags
                 risk = []
                 size_mb = len(blob) / (1024*1024)
                 if size_mb >= int(large_mb):
@@ -899,19 +958,29 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                             risk.append(f"Brand term match: {term}")
                             break
 
-                # Name for ZIP export
+                # For ZIP export
                 safe_file = re.sub(r"[^a-zA-Z0-9._-]", "_", filename.rsplit("/", 1)[-1])
                 base = safe_file[:-5] if safe_file.lower().endswith(".pptx") else safe_file
                 ext = f".{fmt}" if fmt and not str(fmt).startswith(".") else (fmt or ".img")
                 zip_name = f"{base}_slide{slide_idx}_shape{shape_idx}_{sha1[:10]}{ext}"
                 images_for_zip.append((zip_name, blob))
 
+                # Reverse image search links for the embedded image
+                import urllib.parse
+                image_url_encoded = urllib.parse.quote(
+                    f"data:image/{fmt};base64,{base64.b64encode(blob).decode('ascii')}", safe=''
+                )
+                google_link = f"https://www.google.com/searchbyimage?image_url={image_url_encoded}"
+                tineye_link = f"https://tineye.com/search?url={image_url_encoded}"
+
                 rows.append({
                     "File": filename,
                     "Slide": slide_idx,
                     "Shape": getattr(shape, "name", ""),
                     "Alt Text": alt,
-                    "Hyperlink": href,
+                    "Hyperlink": href,             # only if picture has a link
+                    "External Media Link": "",      # not applicable for embedded image rows
+                    "External Media Kind": "",
                     "Format": fmt,
                     "Content-Type": ctype,
                     "Bytes": len(blob),
@@ -919,8 +988,14 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     "Height": height,
                     "EXIF Artist": exif_artist,
                     "SHA1": sha1,
+                    "Google Images": google_link,
+                    "TinEye": tineye_link,
                     "Risk Flags": ", ".join(risk),
                 })
+
+            # Also collect media links found in text boxes (kept separate)
+            rows.extend(_extract_text_media_from_slide(slide, slide_idx, filename))
+
         return rows, images_for_zip
 
     if run_pptx and pptx_files:
@@ -937,35 +1012,36 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
             all_images.extend(images_for_zip)
 
         if not all_rows:
-            st.warning("No images found in the uploaded PPTX files.")
+            st.warning("No images or media URLs found in the uploaded PPTX files.")
         else:
             dfp = pd.DataFrame(all_rows)
 
-            # Optional dedupe by SHA1
+            # Dedupe embedded images (text-media rows have empty SHA1 and won't be deduped)
             if pptx_dedupe and "SHA1" in dfp.columns:
                 first_seen = {}
                 duplicate_of = []
                 keep_mask = []
                 for sha in dfp["SHA1"]:
-                    if sha in first_seen:
+                    if sha and sha in first_seen:
                         duplicate_of.append(first_seen[sha])
                         keep_mask.append(False)
                     else:
-                        first_seen[sha] = sha
+                        if sha:
+                            first_seen[sha] = sha
                         duplicate_of.append("")
                         keep_mask.append(True)
                 dfp["Duplicate Of"] = duplicate_of
-                st.checkbox("Show duplicates only", value=False, key="pptx_show_dupes")
+                st.checkbox("Show duplicates only (embedded images)", value=False, key="pptx_show_dupes")
                 if not st.session_state.get("pptx_show_dupes"):
                     dfp = dfp[keep_mask]
                 else:
                     dfp = dfp[[not k for k in keep_mask]]
 
-            # Render table (make Hyperlink clickable)
+            # Clickable columns in-app
             col_cfg = {}
-            if "Hyperlink" in dfp.columns:
-                col_cfg["Hyperlink"] = st.column_config.LinkColumn("Hyperlink")
-            
+            for link_col in ["Hyperlink", "External Media Link", "Google Images", "TinEye"]:
+                if link_col in dfp.columns:
+                    col_cfg[link_col] = st.column_config.LinkColumn(link_col)
             st.data_editor(
                 dfp,
                 use_container_width=True,
@@ -973,8 +1049,8 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 disabled=True,
                 column_config=col_cfg,
             )
-            
-            # Exports: CSV / Excel / ZIP of images
+
+            # CSV / Excel / ZIP
             csv_bytes = dfp.to_csv(index=False).encode("utf-8")
 
             def _pptx_to_excel_bytes(df_: pd.DataFrame) -> bytes:
@@ -982,60 +1058,43 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
                     df_.to_excel(writer, sheet_name="PPTX Audit", index=False)
                     ws = writer.sheets["PPTX Audit"]
-            
-                    # Optional niceties: set column widths based on content (capped)
+                    # width tuning
                     for idx, col in enumerate(df_.columns):
                         try:
                             approx = int(min(max(12, df_[col].astype(str).str.len().quantile(0.9)), 60))
                         except Exception:
                             approx = 20
                         ws.set_column(idx, idx, approx)
-            
-                    # ✅ Convert the "Hyperlink" column to real Excel hyperlinks
-                    if "Hyperlink" in df_.columns:
-                        hcol = df_.columns.get_loc("Hyperlink")
-                        # Data rows start at Excel row index 1 (row 0 is header)
-                        for r, val in enumerate(df_["Hyperlink"].astype(str).tolist()):
-                            if val.startswith(("http://", "https://")):
-                                ws.write_url(r + 1, hcol, val, string=val)
-            
+                    # write hyperlinks
+                    for link_col in ["Hyperlink", "External Media Link", "Google Images", "TinEye"]:
+                        if link_col in df_.columns:
+                            hcol = df_.columns.get_loc(link_col)
+                            for r, val in enumerate(df_[link_col].astype(str).tolist()):
+                                if val.startswith(("http://", "https://")):
+                                    ws.write_url(r + 1, hcol, val, string=val)
                 out.seek(0)
                 return out.read()
 
             xlsx_bytes = _pptx_to_excel_bytes(dfp)
 
-            st.download_button(
-                "Download CSV (PPTX)",
-                data=csv_bytes,
-                file_name="pptx_image_audit.csv",
-                mime="text/csv",
-            )
+            st.download_button("Download CSV (PPTX)", data=csv_bytes, file_name="pptx_image_audit.csv", mime="text/csv")
+            st.download_button("Download Excel (PPTX)", data=xlsx_bytes, file_name="pptx_image_audit.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            st.download_button(
-                "Download Excel (PPTX)",
-                data=xlsx_bytes,
-                file_name="pptx_image_audit.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-            # Package extracted images to a ZIP
             if all_images:
                 zip_buf = BytesIO()
                 with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
                     for name, data in all_images:
                         zf.writestr(name, data)
                 zip_buf.seek(0)
-                st.download_button(
-                    "Download extracted images (ZIP)",
-                    data=zip_buf.getvalue(),
-                    file_name="pptx_images.zip",
-                    mime="application/zip",
-                )
+                st.download_button("Download extracted images (ZIP)", data=zip_buf.getvalue(),
+                                   file_name="pptx_images.zip", mime="application/zip")
             else:
                 st.caption("No extractable images to package.")
-
     elif run_pptx and not pptx_files:
         st.warning("Please upload at least one .pptx file.")
+
+
 
 
 
