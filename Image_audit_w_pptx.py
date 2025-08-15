@@ -163,6 +163,26 @@ with st.sidebar:
     concurrency = st.slider("Concurrency (workers)", 1, 10, 5)
     base_delay_ms = st.slider("Base delay between requests (ms)", 0, 1000, 300, step=50)
 
+    st.markdown("**Robots**")
+    respect_robots = st.checkbox(
+        "Respect robots.txt",
+        value=True,
+        help="Uncheck only if you own the site or have written permission."
+)
+
+ua_mode = st.selectbox(
+    "Crawler identity (User-Agent)",
+    ["Auditor (default)", "Browser-like"],
+    index=0,
+    help="Some sites block unknown crawlers. A browser-like UA may pass generic rules for normal browsers."
+)
+
+user_agent = (
+    DEFAULT_HEADERS["User-Agent"]
+    if ua_mode == "Auditor (default)"
+    else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
+)
+
     st.markdown("**Features**")
     parse_css_backgrounds = st.checkbox("Capture CSS background images", value=False)
     try_exif = st.checkbox("Attempt EXIF/IPTC (≤ size cap)", value=True)
@@ -242,7 +262,7 @@ def same_scope(url: str, root: str, include_subs: bool) -> bool:
     except Exception:
         return False
 
-def get_robots_session(base_url: str):
+def get_robots_session(base_url: str, user_agent: str):
     parsed = urlparse(base_url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     rp = robotparser.RobotFileParser()
@@ -252,8 +272,12 @@ def get_robots_session(base_url: str):
     except Exception:
         pass
     s = requests.Session()
-    s.headers.update(DEFAULT_HEADERS)
+    headers = DEFAULT_HEADERS.copy()
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    s.headers.update(headers)
     return rp, s
+
 
 def polite_get(session: requests.Session, url: str, delay_ms: int, timeout: int = 15):
     time.sleep(delay_ms / 1000.0)
@@ -419,14 +443,17 @@ if go:
         baseline_images = 0
         baseline_bytes = 0
 
-    rp, session = get_robots_session(start_url)
+    rp, session = get_robots_session(start_url, user_agent)
 
     # Hotlink baseline + brand terms
     root_regdomain = tldextract.extract(start_url).registered_domain
     brand_terms = [t.strip().lower() for t in (brand_terms_raw or "").split(",") if t.strip()]
 
-    if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], start_url):
-        st.warning("robots.txt disallows crawling the start URL. Aborting.")
+    if respect_robots and rp and not rp.can_fetch(user_agent, start_url):
+        st.warning(
+            "robots.txt disallows crawling the start URL for this user-agent. "
+            "Try the browser-like identity or uncheck 'Respect robots.txt' if you own the site."
+        )
         st.stop()
 
     progress = st.progress(0)
@@ -452,7 +479,7 @@ if go:
 
         if d > depth_max:
             continue
-        if rp and not rp.can_fetch(DEFAULT_HEADERS["User-Agent"], url):
+        if respect_robots and rp and not rp.can_fetch(user_agent, url):
             continue
 
         resp = polite_get(session, url, base_delay_ms)
@@ -514,16 +541,20 @@ if go:
             width = None
             height = None
 
-            # Auto-enable EXIF whenever thumbnails are on
+            # Auto-enable fetch whenever EXIF or thumbnails are requested
             effective_try_exif = (try_exif or show_thumbs)
-            need_fetch = (effective_try_exif or show_thumbs) and size_ok and (content_type_img.startswith("image/") or ext in IMG_EXTS)
+            ctype = (ct or "").lower()
+
+            # No need to repeat "or show_thumbs" here; it's already in effective_try_exif
+            need_fetch = effective_try_exif and size_ok and (ctype.startswith("image/") or ext in IMG_EXTS)
 
             if need_fetch:
                 if added_bytes() < total_bytes_cap_mb * 1024 * 1024:
                     buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                     total_bytes_downloaded += n
                     if buf:
-                        if effective_try_exif:
+                        # ✅ Only parse EXIF if explicitly requested
+                        if try_exif:
                             try:
                                 with Image.open(buf) as im:
                                     width, height = im.size
@@ -534,16 +565,19 @@ if go:
                                             exif_author = str(artist)
                             except (UnidentifiedImageError, OSError):
                                 pass
+
+                        # ✅ Thumbnails: reset buffer and render
                         if show_thumbs:
                             try:
                                 buf.seek(0)
+                                thumb = try_make_thumb(buf)
+                                if thumb:
+                                    thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
                             except Exception:
                                 pass
-                            thumb = try_make_thumb(buf)
-                            if thumb:
-                                thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
                 else:
                     note = (note + "; " if note else "") + "Skipped (hit additional download cap this run)"
+
 
             # ---- Risk flags ----
             risk = []
@@ -602,10 +636,28 @@ if go:
             status.info("Hit additional image limit for this run. You can raise the limit and resume again.")
             break
 
+        # --------------------------
+        # CSS backgrounds (robots-aware)
+        # --------------------------
         if parse_css_backgrounds and css_queue and not st.session_state._stop:
+            # Filter CSS files by robots.txt when enabled
+            if respect_robots and rp:
+                allowed_css = []
+                for (page_url, css_url) in css_queue:
+                    try:
+                        if rp.can_fetch(user_agent, css_url):
+                            allowed_css.append((page_url, css_url))
+                    except Exception:
+                        # If robotparser errors, skip this CSS when respecting robots
+                        continue
+            else:
+                allowed_css = list(css_queue)
+
             with ThreadPoolExecutor(max_workers=min(concurrency, 4)) as ex:
-                futs = {ex.submit(polite_get, session, css_url, base_delay_ms): (page_url, css_url)
-                        for (page_url, css_url) in css_queue}
+                futs = {
+                    ex.submit(polite_get, session, css_url, base_delay_ms): (page_url, css_url)
+                    for (page_url, css_url) in allowed_css
+                }
                 css_queue = []
                 for fut in as_completed(futs):
                     page_url, css_url = futs[fut]
@@ -616,6 +668,11 @@ if go:
                     for u in extract_urls_from_css(css_text, css_url):
                         if added_images() >= max_images:
                             break
+
+                        # (Optional) also respect robots for the image asset itself
+                        if respect_robots and rp and not rp.can_fetch(user_agent, u):
+                            continue
+
                         ext = file_ext(u)
                         size, ct = head_size(session, u)
                         size_ok = True
@@ -623,12 +680,14 @@ if go:
                         if size is not None and size > per_image_size_mb * 1024 * 1024:
                             size_ok = False
                             note = "Skipped (exceeds per-image size cap)"
+
                         exif_author = ""
                         thumb_data = None
                         width = None
                         height = None
                         effective_try_exif = (try_exif or show_thumbs)
                         need_fetch = (effective_try_exif or show_thumbs) and size_ok and (ct.startswith("image/") or ext in IMG_EXTS)
+
                         if need_fetch:
                             if added_bytes() < total_bytes_cap_mb * 1024 * 1024:
                                 buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
@@ -640,9 +699,10 @@ if go:
                                                 width, height = im.size
                                                 exif = im.getexif()
                                                 if exif:
-                                                    artist = im.getexif().get(315)
+                                                    artist = exif.get(315)
                                                     if artist:
                                                         exif_author = str(artist)
+
                                         except (UnidentifiedImageError, OSError):
                                             pass
                                     if show_thumbs:
@@ -703,6 +763,7 @@ if go:
                         images_found += 1
                         if added_images() >= max_images:
                             break
+
 
         # Persist state after each page
         st.session_state.crawl_state = {
@@ -1213,6 +1274,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
