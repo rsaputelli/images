@@ -849,6 +849,7 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
         return ""
 
     def _extract_text_media_from_slide(slide, slide_idx: int, filename: str):
+        """Collect media-like URLs (images/videos) from text boxes, mark kind and keep clickable link."""
         rows = []
         for shape in slide.shapes:
             if not getattr(shape, "has_text_frame", False):
@@ -867,7 +868,7 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     "Slide": slide_idx,
                     "Shape": getattr(shape, "name", ""),
                     "Alt Text": "",
-                    "Hyperlink": "",                 # reserved for on-picture link; leave empty here
+                    "Hyperlink": "",                 # reserved for on-picture link; empty for text items
                     "External Media Link": url,      # clickable URL from text box
                     "External Media Kind": kind,     # image | video
                     "Format": "text",
@@ -877,26 +878,31 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     "Height": None,
                     "EXIF Artist": "",
                     "SHA1": "",
-                    "Google Images": "",             # reverse search only for embedded images
+                    "Google Images": "",             # reverse search only for embedded images (not in XLSX)
                     "TinEye": "",
                     "Risk Flags": "",
                 })
         return rows
 
     def _scan_pptx_bytes(buf_bytes, filename, brand_terms, large_px, large_mb):
+        """
+        Returns:
+          rows: table rows for DataFrame
+          image_records: list of dicts with {'zip_name','blob','sha1','file','slide','shape','fmt'}
+        """
         rows = []
-        images_for_zip = []
+        image_records = []
         try:
             prs = Presentation(BytesIO(buf_bytes))
         except Exception:
             st.warning(f"Skipping '{filename}': not a valid PPTX file or could not be parsed.")
-            return rows, images_for_zip
+            return rows, image_records
 
         for slide_idx, slide in enumerate(prs.slides, start=1):
             shape_idx = 0
             for shape in slide.shapes:
                 shape_idx += 1
-                # Picture detection
+                # Detect embedded picture shapes
                 is_picture = False
                 try:
                     is_picture = (shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
@@ -956,27 +962,32 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                             risk.append(f"Brand term match: {term}")
                             break
 
-                # For ZIP export
+                # For ZIP export + HTML mapping
                 safe_file = re.sub(r"[^a-zA-Z0-9._-]", "_", filename.rsplit("/", 1)[-1])
                 base = safe_file[:-5] if safe_file.lower().endswith(".pptx") else safe_file
                 ext = f".{fmt}" if fmt and not str(fmt).startswith(".") else (fmt or ".img")
                 zip_name = f"{base}_slide{slide_idx}_shape{shape_idx}_{sha1[:10]}{ext}"
-                images_for_zip.append((zip_name, blob))
+                image_records.append({
+                    "zip_name": zip_name,
+                    "blob": blob,
+                    "sha1": sha1,
+                    "file": filename,
+                    "slide": slide_idx,
+                    "shape": getattr(shape, "name", ""),
+                    "fmt": fmt or "img",
+                })
 
-                # Reverse image search links (full, for in-app table)
-                import urllib.parse
-                data_url = f"data:image/{fmt};base64,{base64.b64encode(blob).decode('ascii')}"
-                image_url_encoded = urllib.parse.quote(data_url, safe='')
-                google_link = f"https://www.google.com/searchbyimage?image_url={image_url_encoded}"
-                tineye_link = f"https://tineye.com/search?url={image_url_encoded}"
+                # In-app table uses short placeholders (fast) — full links will be in HTML report
+                google_link = "https://lens.google.com/upload"
+                tineye_link = "https://tineye.com/"
 
                 rows.append({
                     "File": filename,
                     "Slide": slide_idx,
                     "Shape": getattr(shape, "name", ""),
                     "Alt Text": alt,
-                    "Hyperlink": href,                 # link attached directly to the picture (if any)
-                    "External Media Link": "",          # not applicable for embedded image rows
+                    "Hyperlink": href,                 # link attached to the picture (if any)
+                    "External Media Link": "",          # N/A for embedded image rows
                     "External Media Kind": "",
                     "Format": fmt,
                     "Content-Type": ctype,
@@ -985,52 +996,88 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     "Height": height,
                     "EXIF Artist": exif_artist,
                     "SHA1": sha1,
-                    "Google Images": google_link,       # long (works in-app)
-                    "TinEye": tineye_link,              # long (works in-app)
+                    "Google Images": google_link,       # short placeholders (not written to XLSX)
+                    "TinEye": tineye_link,              # short placeholders (not written to XLSX)
                     "Risk Flags": ", ".join(risk),
                 })
 
             # Also collect media links found in text boxes (kept separate)
             rows.extend(_extract_text_media_from_slide(slide, slide_idx, filename))
 
-        return rows, images_for_zip
+        return rows, image_records
 
-    def _write_url_safe(ws, row, col, url: str, link_col_name: str):
+    def _build_html_report(df_: pd.DataFrame, image_records: list) -> bytes:
         """
-        Excel silently drops very long hyperlinks. If too long, write a short, helpful fallback.
+        Creates an HTML report with full prefilled reverse-image links for embedded images.
+        Uses SHA1 to map DataFrame rows to blobs.
         """
-        try:
-            u = str(url or "")
-        except Exception:
-            u = ""
-        if u.startswith(("http://", "https://")) and len(u) <= 2000:
-            ws.write_url(row, col, u, string=u)
-        else:
-            # Fallbacks for reverse search columns (short + reliable)
-            if link_col_name.lower().startswith("tineye"):
-                ws.write_url(row, col, "https://tineye.com/", string="TinEye (upload image)")
-            elif link_col_name.lower().startswith("google"):
-                # Lens is the current upload entrypoint
-                ws.write_url(row, col, "https://lens.google.com/upload", string="Google Images / Lens (upload)")
-            else:
-                # Generic fallback
-                if u:
-                    ws.write_string(row, col, "(URL too long for Excel)")
-                else:
-                    ws.write_string(row, col, "")
+        import urllib.parse
+        sha_map = {rec["sha1"]: rec for rec in image_records}
+        html = []
+        html.append("<!doctype html><meta charset='utf-8'><title>PPTX Reverse Image Report</title>")
+        html.append("<style>body{font-family:system-ui,Segoe UI,Arial}table{border-collapse:collapse;margin-top:12px}th,td{border:1px solid #ccc;padding:6px 8px;font-size:14px}code{background:#f6f8fa;padding:0 4px}</style>")
+        html.append("<h2>PPTX Reverse Image Report</h2>")
+        html.append("<p>This report includes fully prefilled reverse-image search links. Use this when Excel links only open the site.</p>")
+        html.append("<table><thead><tr><th>File</th><th>Slide</th><th>Shape</th><th>Google Images</th><th>TinEye</th><th>Notes</th></tr></thead><tbody>")
+        for _, r in df_.iterrows():
+            sha = str(r.get("SHA1") or "")
+            if not sha:
+                continue  # only embedded images have reverse-image links
+            rec = sha_map.get(sha)
+            if not rec:
+                continue
+            fmt = rec.get("fmt", "img")
+            try:
+                b64 = base64.b64encode(rec["blob"]).decode("ascii")
+                data_url = f"data:image/{fmt};base64,{b64}"
+                enc = urllib.parse.quote(data_url, safe='')
+                g = f"https://www.google.com/searchbyimage?image_url={enc}"
+                t = f"https://tineye.com/search?url={enc}"
+            except Exception:
+                g = "https://lens.google.com/upload"
+                t = "https://tineye.com/"
+            file_ = str(r.get("File") or "")
+            slide = str(r.get("Slide") or "")
+            shape = str(r.get("Shape") or "")
+            note = str(r.get("Risk Flags") or "")
+            g_link = f"<a href='{g}' target='_blank'>Open</a>"
+            t_link = f"<a href='{t}' target='_blank'>Open</a>"
+            html.append(f"<tr><td>{file_}</td><td>{slide}</td><td>{shape}</td><td>{g_link}</td><td>{t_link}</td><td>{note}</td></tr>")
+        html.append("</tbody></table>")
+
+        # Optional: external media links detected in text boxes
+        has_ext = False
+        for _, r in df_.iterrows():
+            if str(r.get("External Media Link") or ""):
+                has_ext = True; break
+        if has_ext:
+            html.append("<h3>External Media Links Found in Text</h3>")
+            html.append("<table><thead><tr><th>File</th><th>Slide</th><th>Shape</th><th>Kind</th><th>URL</th></tr></thead><tbody>")
+            for _, r in df_.iterrows():
+                url = str(r.get("External Media Link") or "")
+                if not url:
+                    continue
+                file_ = str(r.get("File") or "")
+                slide = str(r.get("Slide") or "")
+                shape = str(r.get("Shape") or "")
+                kind = str(r.get("External Media Kind") or "")
+                html.append(f"<tr><td>{file_}</td><td>{slide}</td><td>{shape}</td><td>{kind}</td><td><a href='{url}' target='_blank'>Open</a></td></tr>")
+            html.append("</tbody></table>")
+
+        return "\n".join(html).encode("utf-8")
 
     if run_pptx and pptx_files:
         brand_terms = [t.strip().lower() for t in (pptx_brand_terms_raw or "").split(",") if t.strip()]
         all_rows = []
-        all_images = []
+        image_records = []
         for f in pptx_files:
             try:
                 bytes_ = f.getvalue()
             except Exception:
                 bytes_ = f.read()
-            rows, images_for_zip = _scan_pptx_bytes(bytes_, f.name, brand_terms, int(pptx_large_px), int(pptx_large_mb))
+            rows, recs = _scan_pptx_bytes(bytes_, f.name, brand_terms, int(pptx_large_px), int(pptx_large_mb))
             all_rows.extend(rows)
-            all_images.extend(images_for_zip)
+            image_records.extend(recs)
 
         if not all_rows:
             st.warning("No images or media URLs found in the uploaded PPTX files.")
@@ -1058,106 +1105,112 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 else:
                     dfp = dfp[[not k for k in keep_mask]]
 
-            # Clickable columns in-app (long URLs OK here)
+            # Clickable columns in-app (short placeholders are fine here)
             col_cfg = {}
             for link_col in ["Hyperlink", "External Media Link", "Google Images", "TinEye"]:
                 if link_col in dfp.columns:
                     col_cfg[link_col] = st.column_config.LinkColumn(link_col)
-            st.data_editor(
-                dfp,
-                use_container_width=True,
-                hide_index=True,
-                disabled=True,
-                column_config=col_cfg,
-            )
+
+            # Faster fallback for big tables
+            max_editor_rows = 200
+            if len(dfp) <= max_editor_rows:
+                st.data_editor(
+                    dfp,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=True,
+                    column_config=col_cfg,
+                )
+            else:
+                st.info(f"Showing a fast preview of {len(dfp)} rows (full links available in the HTML report and in the ZIP).")
+                preview_cols = [c for c in dfp.columns if c not in ("Google Images", "TinEye")]
+                st.dataframe(dfp[preview_cols], use_container_width=True, hide_index=True)
 
             # ---------- Exports ----------
-            # CSV
+            # CSV: includes all columns (even Google/TinEye placeholders)
             csv_bytes = dfp.to_csv(index=False).encode("utf-8")
 
-            # Excel (write shorter fallbacks when needed)
+            # Excel: drop Google/TinEye columns entirely (per your request)
             def _pptx_to_excel_bytes(df_: pd.DataFrame) -> bytes:
                 out = BytesIO()
                 with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
-                    df_.to_excel(writer, sheet_name="PPTX Audit", index=False)
+                    df_xlsx = df_.drop(columns=["Google Images", "TinEye"], errors="ignore").copy()
+                    df_xlsx.to_excel(writer, sheet_name="PPTX Audit", index=False)
                     ws = writer.sheets["PPTX Audit"]
                     # column widths
-                    for idx, col in enumerate(df_.columns):
+                    for idx, col in enumerate(df_xlsx.columns):
                         try:
-                            approx = int(min(max(12, df_[col].astype(str).str.len().quantile(0.9)), 60))
+                            approx = int(min(max(12, df_xlsx[col].astype(str).str.len().quantile(0.9)), 60))
                         except Exception:
                             approx = 20
                         ws.set_column(idx, idx, approx)
-                    # write hyperlinks (with safe fallback for long links)
-                    for link_col in ["Hyperlink", "External Media Link", "Google Images", "TinEye"]:
-                        if link_col in df_.columns:
-                            hcol = df_.columns.get_loc(link_col)
-                            for r, val in enumerate(df_[link_col].astype(str).tolist()):
-                                _write_url_safe(ws, r + 1, hcol, val, link_col)
+                    # write hyperlinks only for real URL columns we kept
+                    for link_col in ["Hyperlink", "External Media Link"]:
+                        if link_col in df_xlsx.columns:
+                            hcol = df_xlsx.columns.get_loc(link_col)
+                            for r, val in enumerate(df_xlsx[link_col].astype(str).tolist()):
+                                if val.startswith(("http://", "https://")):
+                                    ws.write_url(r + 1, hcol, val, string=val)
                 out.seek(0)
                 return out.read()
 
             xlsx_bytes = _pptx_to_excel_bytes(dfp)
 
+            # HTML report: full, prefilled reverse-image links for embedded images
+            html_bytes = _build_html_report(dfp, image_records)
+
             # Images ZIP
             images_zip_bytes = None
-            if all_images:
+            if image_records:
                 zip_buf = BytesIO()
                 with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    for name, data in all_images:
-                        zf.writestr(f"images/{name}", data)
+                    for rec in image_records:
+                        zf.writestr(f"images/{rec['zip_name']}", rec["blob"])
                 zip_buf.seek(0)
                 images_zip_bytes = zip_buf.getvalue()
 
-            # "Download All" ZIP (CSV + XLSX + images/)
+            # "Download All" ZIP (ONLY this gets persisted)
             all_zip_buf = BytesIO()
             with zipfile.ZipFile(all_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
                 z.writestr("pptx_image_audit.csv", csv_bytes)
                 z.writestr("pptx_image_audit.xlsx", xlsx_bytes)
+                z.writestr("pptx_image_audit.html", html_bytes)
                 if images_zip_bytes:
-                    # explode images into the big zip
+                    # inline images into this bundle
                     with zipfile.ZipFile(BytesIO(images_zip_bytes)) as imgs:
                         for info in imgs.infolist():
                             z.writestr(info.filename, imgs.read(info.filename))
-                # tiny README
                 z.writestr("README.txt",
-                           "PPTX audit artifacts.\n- pptx_image_audit.csv\n- pptx_image_audit.xlsx (short fallback links for reverse image search)\n- images/ (extracted embedded images)\n")
-
+                           "PPTX audit artifacts.\n"
+                           "- pptx_image_audit.csv\n"
+                           "- pptx_image_audit.xlsx (no Google/TinEye columns)\n"
+                           "- pptx_image_audit.html (prefilled reverse-image links)\n"
+                           "- images/ (extracted embedded images)\n")
             all_zip_bytes = all_zip_buf.getvalue()
 
-            # Persist artifacts so multiple downloads don't require rerun
-            st.session_state["pptx_artifacts"] = {
-                "csv": csv_bytes,
-                "xlsx": xlsx_bytes,
-                "images_zip": images_zip_bytes,
-                "all_zip": all_zip_bytes,
-            }
+            # Persist ONLY the all-in-one ZIP (lean memory)
+            st.session_state["pptx_artifacts"] = {"all_zip": all_zip_bytes}
 
-            # Download buttons (persistent)
+            # Download buttons (CSV/XLSX/HTML immediate; only ZIP is persisted)
             st.download_button("Download CSV (PPTX)", data=csv_bytes, file_name="pptx_image_audit.csv", mime="text/csv")
             st.download_button("Download Excel (PPTX)", data=xlsx_bytes, file_name="pptx_image_audit.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            if images_zip_bytes:
-                st.download_button("Download extracted images (ZIP)", data=images_zip_bytes,
-                                   file_name="pptx_images.zip", mime="application/zip")
+            st.download_button("Download HTML (prefilled reverse-image links)", data=html_bytes,
+                               file_name="pptx_image_audit.html", mime="text/html")
             st.download_button("Download ALL artifacts (ZIP)", data=all_zip_bytes,
                                file_name="pptx_audit_bundle.zip", mime="application/zip")
 
     elif run_pptx and not pptx_files:
         st.warning("Please upload at least one .pptx file.")
 
-    # Show persistent downloads even after interactions (no rerun needed)
-    if st.session_state.get("pptx_artifacts"):
-        art = st.session_state["pptx_artifacts"]
-        st.markdown("**Previous scan artifacts:**")
-        st.download_button("⬇️ CSV (prev)", data=art["csv"], file_name="pptx_image_audit.csv", mime="text/csv", key="pptx_prev_csv")
-        st.download_button("⬇️ Excel (prev)", data=art["xlsx"], file_name="pptx_image_audit.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="pptx_prev_xlsx")
-        if art.get("images_zip"):
-            st.download_button("⬇️ Images ZIP (prev)", data=art["images_zip"], file_name="pptx_images.zip",
-                               mime="application/zip", key="pptx_prev_imgs")
-        st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
-                           mime="application/zip", key="pptx_prev_all")
+# Show persistent download (only ALL ZIP) without rerunning
+if st.session_state.get("pptx_artifacts"):
+    art = st.session_state["pptx_artifacts"]
+    st.markdown("**Previous scan:**")
+    st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
+                       mime="application/zip", key="pptx_prev_all")
+
+
 
 
 
