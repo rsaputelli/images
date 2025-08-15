@@ -168,20 +168,20 @@ with st.sidebar:
         "Respect robots.txt",
         value=True,
         help="Uncheck only if you own the site or have written permission."
-)
-
-ua_mode = st.selectbox(
-    "Crawler identity (User-Agent)",
-    ["Auditor (default)", "Browser-like"],
-    index=0,
-    help="Some sites block unknown crawlers. A browser-like UA may pass generic rules for normal browsers."
-)
-
-user_agent = (
-    DEFAULT_HEADERS["User-Agent"]
-    if ua_mode == "Auditor (default)"
-    else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
-)
+    )
+    
+    ua_mode = st.selectbox(
+        "Crawler identity (User-Agent)",
+        ["Auditor (default)", "Browser-like"],
+        index=0,
+        help="Some sites block unknown crawlers. A browser-like UA may pass generic rules for normal browsers."
+    )
+    
+    user_agent = (
+        DEFAULT_HEADERS["User-Agent"]
+        if ua_mode == "Auditor (default)"
+        else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
+    )
 
     st.markdown("**Features**")
     parse_css_backgrounds = st.checkbox("Capture CSS background images", value=False)
@@ -1274,6 +1274,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
