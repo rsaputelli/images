@@ -928,6 +928,24 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
     MEDIA_VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
     MEDIA_VIDEO_DOMAINS = {'youtube.com', 'youtu.be', 'vimeo.com', 'player.vimeo.com'}
     
+    def _looks_like_direct_image(u: str) -> bool:
+        """True if URL is http(s) and path ends with a common image extension."""
+        try:
+            p = urlparse(u)
+            if p.scheme not in ("http", "https"):
+                return False
+            return any((p.path or "").lower().endswith(ext) for ext in MEDIA_IMAGE_EXTS)
+        except Exception:
+            return False
+
+    def _prefill_reverse_links(u: str):
+        """Build Google/TinEye query URLs for a public image URL (keeps links short)."""
+        enc = requests.utils.quote(u, safe="")
+        g = f"https://www.google.com/searchbyimage?image_url={enc}"
+        t = f"https://tineye.com/search?url={enc}"
+        return g, t
+
+    
     def _is_direct_image_url(u: str) -> bool:
         try:
             p = urlparse(u)
@@ -969,6 +987,13 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 kind = _classify_media_url(url)
                 if not kind:
                     continue
+
+                g_link = ""
+                t_link = ""
+                # For direct image URLs, we can prefill both engines
+                if kind == "image" and _looks_like_direct_image(url):
+                    g_link, t_link = _prefill_reverse_links(url)
+
                 rows.append({
                     "File": filename,
                     "Slide": slide_idx,
@@ -984,11 +1009,12 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     "Height": None,
                     "EXIF Artist": "",
                     "SHA1": "",
-                    "Google Images": "",             # reverse search only for embedded images (not in XLSX)
-                    "TinEye": "",
+                    "Google Images": g_link,         # prefilled when possible
+                    "TinEye": t_link,                # prefilled when possible
                     "Risk Flags": "",
                 })
         return rows
+
 
     def _scan_pptx_bytes(buf_bytes, filename, brand_terms, large_px, large_mb):
         """
@@ -1048,16 +1074,13 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     href = getattr(shape.click_action.hyperlink, "address", "") or ""
                 except Exception:
                     href = ""
-                # In-app reverse-image links for this picture
-                if _is_direct_image_url(href):
-                    enc = requests.utils.quote(href, safe="")
-                    google_link = f"https://www.google.com/searchbyimage?image_url={enc}"
-                    tineye_link  = f"https://tineye.com/search?url={enc}"
-                else:
-                    # Fall back to upload landing pages
-                    google_link = "https://lens.google.com/upload"
-                    tineye_link  = "https://tineye.com/"
 
+                # In-app reverse-image links (prefer a direct image URL; else fall back to upload pages)
+                if _is_direct_image_url_direct_image(href):
+                    google_link, tineye_link = _prefill_reverse_links(href)
+                else:
+                    google_link = "https://lens.google.com/upload"
+                    tineye_link = "https://tineye.com/"
 
                 # Risk flags
                 risk = []
@@ -1387,6 +1410,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
