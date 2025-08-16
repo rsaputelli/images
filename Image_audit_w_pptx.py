@@ -267,17 +267,6 @@ if st.session_state.get("_resume_request"):
 # --------------------------
 # Helpers
 # --------------------------
-def normalize_url(u: str) -> str:
-    u = (u or "").strip()
-    if not u:
-        return ""
-    # Add https:// if no scheme provided
-    if not urlparse(u).scheme:
-        u = "https://" + u
-    # Fix accidental triple-slashes
-    if u.startswith("http:///") or u.startswith("https:///"):
-        u = u.replace(":///", "://", 1)
-    return u
 
 def same_scope(url: str, root: str, include_subs: bool) -> bool:
     try:
@@ -577,9 +566,12 @@ if go:
 
             # Auto-enable fetch whenever EXIF or thumbnails are requested
             effective_try_exif = (try_exif or show_thumbs)
-            ctype = (ct or "").lower()
+            ctype = (content_type_img or "").lower()
 
             # No need to repeat "or show_thumbs" here; it's already in effective_try_exif
+            effective_try_exif = (try_exif or show_thumbs)
+            ctype = (ct or "").lower()  # ct is from head_size(...)
+
             need_fetch = effective_try_exif and size_ok and (ctype.startswith("image/") or ext in IMG_EXTS)
 
             if need_fetch:
@@ -587,7 +579,7 @@ if go:
                     buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                     total_bytes_downloaded += n
                     if buf:
-                        # ✅ Only parse EXIF if explicitly requested
+                        # Only parse EXIF if explicitly requested (saves CPU)
                         if try_exif:
                             try:
                                 with Image.open(buf) as im:
@@ -597,6 +589,19 @@ if go:
                                         artist = exif.get(315)
                                         if artist:
                                             exif_author = str(artist)
+                            except (UnidentifiedImageError, OSError):
+                                pass
+
+                        # Thumbnails (reset buffer)
+                        if show_thumbs:
+                            try:
+                                buf.seek(0)
+                                thumb = try_make_thumb(buf)
+                                if thumb:
+                                    thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
+                            except Exception:
+                                pass
+
                             except (UnidentifiedImageError, OSError):
                                 pass
 
@@ -1308,7 +1313,6 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
-
 
 
 
