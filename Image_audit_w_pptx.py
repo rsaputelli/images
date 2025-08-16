@@ -1112,48 +1112,107 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
 
     def _build_html_report(df_: pd.DataFrame, image_records: list) -> bytes:
         """
-        Creates an HTML report with full prefilled reverse-image links for embedded images.
-        Uses SHA1 to map DataFrame rows to blobs.
+        Creates an HTML report with reverse-image links.
+        - If a real remote image URL exists, prefill Google/TinEye with it.
+        - Otherwise, link to the upload pages and provide a Download button.
         """
         import urllib.parse
+
+        IMG_EXTS = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg')
+
+        def _is_direct_image_url(u: str) -> bool:
+            try:
+                p = urlparse(u)
+                if p.scheme not in ("http", "https"):
+                    return False
+                return any((p.path or "").lower().endswith(ext) for ext in IMG_EXTS)
+            except Exception:
+                return False
+
+        # Map SHA1 -> blob for embedded images (for preview/download only)
         sha_map = {rec["sha1"]: rec for rec in image_records}
+
         html = []
         html.append("<!doctype html><meta charset='utf-8'><title>PPTX Reverse Image Report</title>")
-        html.append("<style>body{font-family:system-ui,Segoe UI,Arial}table{border-collapse:collapse;margin-top:12px}th,td{border:1px solid #ccc;padding:6px 8px;font-size:14px}code{background:#f6f8fa;padding:0 4px}</style>")
+        html.append("""
+    <style>
+    body{font-family:system-ui,Segoe UI,Arial}
+    table{border-collapse:collapse;margin-top:12px;width:100%}
+    th,td{border:1px solid #ccc;padding:6px 8px;font-size:14px;vertical-align:top}
+    .preview img{max-height:80px;max-width:160px}
+    .small{color:#666;font-size:12px}
+    </style>
+    """)
         html.append("<h2>PPTX Reverse Image Report</h2>")
-        html.append("<p>This report includes fully prefilled reverse-image search links. Use this when Excel links only open the site.</p>")
-        html.append("<table><thead><tr><th>File</th><th>Slide</th><th>Shape</th><th>Google Images</th><th>TinEye</th><th>Notes</th></tr></thead><tbody>")
+        html.append("<p class='small'>Tip: If Google/TinEye opens without results, use the <b>Download</b> link below and upload/drag the image into their page.</p>")
+        html.append("<table><thead><tr>"
+                    "<th>File</th><th>Slide</th><th>Shape</th>"
+                    "<th>Preview</th><th>Download</th>"
+                    "<th>Google</th><th>TinEye</th><th>Notes</th></tr></thead><tbody>")
+
         for _, r in df_.iterrows():
-            sha = str(r.get("SHA1") or "")
-            if not sha:
-                continue  # only embedded images have reverse-image links
-            rec = sha_map.get(sha)
-            if not rec:
-                continue
-            fmt = rec.get("fmt", "img")
-            try:
-                b64 = base64.b64encode(rec["blob"]).decode("ascii")
-                data_url = f"data:image/{fmt};base64,{b64}"
-                enc = urllib.parse.quote(data_url, safe='')
-                g = f"https://www.google.com/searchbyimage?image_url={enc}"
-                t = f"https://tineye.com/search?url={enc}"
-            except Exception:
-                g = "https://lens.google.com/upload"
-                t = "https://tineye.com/"
             file_ = str(r.get("File") or "")
             slide = str(r.get("Slide") or "")
             shape = str(r.get("Shape") or "")
-            note = str(r.get("Risk Flags") or "")
+            notes = str(r.get("Risk Flags") or "")
+
+            # Prefer a real remote image URL, if we have one
+            remote_url = ""
+            ext_link = str(r.get("External Media Link") or "")
+            if _is_direct_image_url(ext_link):
+                remote_url = ext_link
+            else:
+                href = str(r.get("Hyperlink") or "")
+                if _is_direct_image_url(href):
+                    remote_url = href
+
+            # Build preview/download (for embedded images with SHA1)
+            preview_html = ""
+            download_html = ""
+            sha = str(r.get("SHA1") or "")
+            if sha and sha in sha_map:
+                rec = sha_map[sha]
+                fmt = (rec.get("fmt") or "png").lstrip(".")
+                b64 = base64.b64encode(rec["blob"]).decode("ascii")
+                data_url = f"data:image/{fmt};base64,{b64}"
+                preview_html = f"<div class='preview'><img src='{data_url}' alt='img'></div>"
+                # Use "download" attribute so the image saves with a sensible name
+                download_html = f"<a href='{data_url}' download='{rec['zip_name']}'>Download</a>"
+            else:
+                # Non-embedded (text-found) links: show nothing to keep report light
+                preview_html = ""
+                download_html = ""
+
+            # Reverse-image links
+            if remote_url:
+                enc = urllib.parse.quote(remote_url, safe='')
+                g = f"https://www.google.com/searchbyimage?image_url={enc}"
+                t = f"https://tineye.com/search?url={enc}"
+            else:
+                # No public URL → open upload pages; user can use "Download" then upload/drag
+                g = "https://lens.google.com/upload"
+                t = "https://tineye.com/"
+
             g_link = f"<a href='{g}' target='_blank'>Open</a>"
             t_link = f"<a href='{t}' target='_blank'>Open</a>"
-            html.append(f"<tr><td>{file_}</td><td>{slide}</td><td>{shape}</td><td>{g_link}</td><td>{t_link}</td><td>{note}</td></tr>")
+
+            html.append(
+                f"<tr>"
+                f"<td>{file_}</td>"
+                f"<td>{slide}</td>"
+                f"<td>{shape}</td>"
+                f"<td>{preview_html}</td>"
+                f"<td>{download_html}</td>"
+                f"<td>{g_link}</td>"
+                f"<td>{t_link}</td>"
+                f"<td>{notes}</td>"
+                f"</tr>"
+            )
+
         html.append("</tbody></table>")
 
-        # Optional: external media links detected in text boxes
-        has_ext = False
-        for _, r in df_.iterrows():
-            if str(r.get("External Media Link") or ""):
-                has_ext = True; break
+        # Optional section: external media links (non-embedded) for reference
+        has_ext = any(str(df_.get("External Media Link", pd.Series([""]))).astype(str))
         if has_ext:
             html.append("<h3>External Media Links Found in Text</h3>")
             html.append("<table><thead><tr><th>File</th><th>Slide</th><th>Shape</th><th>Kind</th><th>URL</th></tr></thead><tbody>")
@@ -1165,10 +1224,12 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 slide = str(r.get("Slide") or "")
                 shape = str(r.get("Shape") or "")
                 kind = str(r.get("External Media Kind") or "")
-                html.append(f"<tr><td>{file_}</td><td>{slide}</td><td>{shape}</td><td>{kind}</td><td><a href='{url}' target='_blank'>Open</a></td></tr>")
+                html.append(f"<tr><td>{file_}</td><td>{slide}</td><td>{shape}</td><td>{kind}</td>"
+                            f"<td><a href='{url}' target='_blank'>{url}</a></td></tr>")
             html.append("</tbody></table>")
 
         return "\n".join(html).encode("utf-8")
+
 
     if run_pptx and pptx_files:
         brand_terms = [t.strip().lower() for t in (pptx_brand_terms_raw or "").split(",") if t.strip()]
@@ -1313,6 +1374,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
