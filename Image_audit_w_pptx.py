@@ -927,6 +927,17 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
     MEDIA_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'}
     MEDIA_VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
     MEDIA_VIDEO_DOMAINS = {'youtube.com', 'youtu.be', 'vimeo.com', 'player.vimeo.com'}
+    
+    def _is_direct_image_url(u: str) -> bool:
+        try:
+            p = urlparse(u)
+            if p.scheme not in ("http", "https"):
+                return False
+            return (p.path or "").lower().endswith(
+                (".jpg",".jpeg",".png",".gif",".webp",".svg")
+            )
+        except Exception:
+            return False
 
     def _classify_media_url(u: str) -> str:
         try:
@@ -1037,6 +1048,16 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     href = getattr(shape.click_action.hyperlink, "address", "") or ""
                 except Exception:
                     href = ""
+                # In-app reverse-image links for this picture
+                if _is_direct_image_url(href):
+                    enc = requests.utils.quote(href, safe="")
+                    google_link = f"https://www.google.com/searchbyimage?image_url={enc}"
+                    tineye_link  = f"https://tineye.com/search?url={enc}"
+                else:
+                    # Fall back to upload landing pages
+                    google_link = "https://lens.google.com/upload"
+                    tineye_link  = "https://tineye.com/"
+
 
                 # Risk flags
                 risk = []
@@ -1071,10 +1092,6 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     "shape": getattr(shape, "name", ""),
                     "fmt": fmt or "img",
                 })
-
-                # In-app table uses short placeholders (fast) — full links will be in HTML report
-                google_link = "https://lens.google.com/upload"
-                tineye_link = "https://tineye.com/"
 
                 rows.append({
                     "File": filename,
@@ -1370,6 +1387,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
