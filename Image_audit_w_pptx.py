@@ -568,10 +568,6 @@ if go:
             effective_try_exif = (try_exif or show_thumbs)
             ctype = (content_type_img or "").lower()
 
-            # No need to repeat "or show_thumbs" here; it's already in effective_try_exif
-            effective_try_exif = (try_exif or show_thumbs)
-            ctype = (ct or "").lower()  # ct is from head_size(...)
-
             need_fetch = effective_try_exif and size_ok and (ctype.startswith("image/") or ext in IMG_EXTS)
 
             if need_fetch:
@@ -602,18 +598,6 @@ if go:
                             except Exception:
                                 pass
 
-                            except (UnidentifiedImageError, OSError):
-                                pass
-
-                        # ✅ Thumbnails: reset buffer and render
-                        if show_thumbs:
-                            try:
-                                buf.seek(0)
-                                thumb = try_make_thumb(buf)
-                                if thumb:
-                                    thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
-                            except Exception:
-                                pass
                 else:
                     note = (note + "; " if note else "") + "Skipped (hit additional download cap this run)"
 
@@ -714,6 +698,7 @@ if go:
 
                         ext = file_ext(u)
                         size, ct = head_size(session, u)
+
                         size_ok = True
                         note = ""
                         if size is not None and size > per_image_size_mb * 1024 * 1024:
@@ -724,15 +709,19 @@ if go:
                         thumb_data = None
                         width = None
                         height = None
+
                         effective_try_exif = (try_exif or show_thumbs)
-                        need_fetch = (effective_try_exif or show_thumbs) and size_ok and (ct.startswith("image/") or ext in IMG_EXTS)
+                        ctype = (ct or "").lower()  # ← normalize!
+
+                        need_fetch = effective_try_exif and size_ok and (ctype.startswith("image/") or ext in IMG_EXTS)
 
                         if need_fetch:
                             if added_bytes() < total_bytes_cap_mb * 1024 * 1024:
                                 buf, n = fetch_bytes(session, u, per_image_size_mb * 1024 * 1024)
                                 total_bytes_downloaded += n
                                 if buf:
-                                    if effective_try_exif:
+                                    # Parse EXIF only if requested
+                                    if try_exif:
                                         try:
                                             with Image.open(buf) as im:
                                                 width, height = im.size
@@ -741,22 +730,24 @@ if go:
                                                     artist = exif.get(315)
                                                     if artist:
                                                         exif_author = str(artist)
-
                                         except (UnidentifiedImageError, OSError):
                                             pass
+
+                                    # Thumbnail (reset buffer first)
                                     if show_thumbs:
                                         try:
                                             buf.seek(0)
+                                            thumb = try_make_thumb(buf)
+                                            if thumb:
+                                                thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
                                         except Exception:
                                             pass
-                                        thumb = try_make_thumb(buf)
-                                        if thumb:
-                                            thumb_data = f"data:image/png;base64,{base64.b64encode(thumb.read()).decode('ascii')}"
                             else:
                                 note = (note + "; " if note else "") + "Skipped (hit additional download cap this run)"
 
                         g_link, t_link = reverse_links(u)
                         dom = domain_of(u)
+
 
                         risk = []
                         if dom in STOCK_DOMAINS:
@@ -1212,7 +1203,12 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
         html.append("</tbody></table>")
 
         # Optional section: external media links (non-embedded) for reference
-        has_ext = any(str(df_.get("External Media Link", pd.Series([""]))).astype(str))
+        has_ext = False
+        for _, r in df_.iterrows():
+            if str(r.get("External Media Link") or ""):
+                has_ext = True
+                break
+
         if has_ext:
             html.append("<h3>External Media Links Found in Text</h3>")
             html.append("<table><thead><tr><th>File</th><th>Slide</th><th>Shape</th><th>Kind</th><th>URL</th></tr></thead><tbody>")
@@ -1374,6 +1370,8 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
+
 
 
 
