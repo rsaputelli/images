@@ -945,7 +945,10 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
         t = f"https://tineye.com/search?url={enc}"
         return g, t
 
-    
+    # Alias so either name works everywhere:
+    _is_direct_image_url = _looks_like_direct_image
+
+  
     def _is_direct_image_url(u: str) -> bool:
         try:
             p = urlparse(u)
@@ -1075,12 +1078,14 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                 except Exception:
                     href = ""
 
-                # In-app reverse-image links (prefer a direct image URL; else fall back to upload pages)
-                if _is_direct_image_url_direct_image(href):
+                # In-app reverse-image links for this picture (keep links short)
+                if _is_direct_image_url(href):
                     google_link, tineye_link = _prefill_reverse_links(href)
                 else:
+                    # Fall back to upload landing pages
                     google_link = "https://lens.google.com/upload"
-                    tineye_link = "https://tineye.com/"
+                    tineye_link  = "https://tineye.com/"
+
 
                 # Risk flags
                 risk = []
@@ -1410,6 +1415,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
