@@ -123,6 +123,17 @@ if "crawl_state" not in st.session_state:
 # --------------------------
 # Sidebar Controls
 # --------------------------
+# --- URL normalizer (must be defined before it's used in the sidebar) ---
+def normalize_url(u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        return ""
+    if not urlparse(u).scheme:
+        u = "https://" + u
+    if u.startswith("http:///") or u.startswith("https:///"):
+        u = u.replace(":///", "://", 1)
+    return u
+
 with st.sidebar:
     st.header("Settings")
     start_url = st.text_input(
@@ -131,7 +142,14 @@ with st.sidebar:
         placeholder="https://example.com",
     )
 
-    # Determine if we are resuming this same URL
+    # Normalize immediately so everything below uses the cleaned URL
+    start_url = normalize_url(start_url)
+
+    # (Optional UI nudge; you also hard-stop later before crawling)
+    if start_url and (not urlparse(start_url).scheme or not urlparse(start_url).netloc):
+        st.sidebar.error("Please enter a valid URL, e.g., https://www.example.com")
+
+    # Determine if we are resuming this same (normalized) URL
     resuming_context = bool(
         st.session_state.get("crawl_state") and st.session_state.crawl_state.get("start_url") == start_url
     )
@@ -249,6 +267,18 @@ if st.session_state.get("_resume_request"):
 # --------------------------
 # Helpers
 # --------------------------
+def normalize_url(u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        return ""
+    # Add https:// if no scheme provided
+    if not urlparse(u).scheme:
+        u = "https://" + u
+    # Fix accidental triple-slashes
+    if u.startswith("http:///") or u.startswith("https:///"):
+        u = u.replace(":///", "://", 1)
+    return u
+
 def same_scope(url: str, root: str, include_subs: bool) -> bool:
     try:
         t_root = tldextract.extract(root)
@@ -414,6 +444,10 @@ if go:
 
     if not start_url:
         st.error("Please enter a start URL.")
+        st.stop()
+    parsed = urlparse(start_url)
+    if not parsed.scheme or not parsed.netloc:
+        st.error("Start URL is invalid. Try including https:// (e.g., https://www.njafp.org).")
         st.stop()
 
     # Initialize or resume state
@@ -1274,6 +1308,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
