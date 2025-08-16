@@ -1318,19 +1318,21 @@ with st.expander("📑 PowerPoint Image Licensing Audit (beta)", expanded=False)
                     col_cfg[link_col] = st.column_config.LinkColumn(link_col)
 
             # Faster fallback for big tables
-            max_editor_rows = 200
-            if len(dfp) <= max_editor_rows:
-                st.data_editor(
-                    dfp,
-                    use_container_width=True,
-                    hide_index=True,
-                    disabled=True,
-                    column_config=col_cfg,
-                )
+            max_editor_rows = 200  # keep or tweak
+            if len(dfp) > max_editor_rows:
+                st.info(f"Showing first {max_editor_rows} rows (use downloads for the full set).")
+                df_show = dfp.head(max_editor_rows)
             else:
-                st.info(f"Showing a fast preview of {len(dfp)} rows (full links available in the HTML report and in the ZIP).")
-                preview_cols = [c for c in dfp.columns if c not in ("Google Images", "TinEye")]
-                st.dataframe(dfp[preview_cols], use_container_width=True, hide_index=True)
+                df_show = dfp
+
+            st.data_editor(
+                df_show,
+                use_container_width=True,
+                hide_index=True,
+                disabled=True,
+                column_config=col_cfg,  # preserves clickable links for "Google Images"/"TinEye"
+)
+
 
             # ---------- Exports ----------
             # CSV: includes all columns (even Google/TinEye placeholders)
@@ -1415,6 +1417,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
