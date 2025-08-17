@@ -42,6 +42,7 @@ You’ll get **Preview**, **Download**, **Google**, **TinEye**, and **Notes**.
 - **Google / TinEye**
   - If a picture has a **direct public image URL** hyperlink (.jpg/.png/etc), links are **prefilled**.
   - If there’s **no public URL**, links open the **upload pages** → click **Download** and upload the image there.
+      -You may also be able to open the google images or TinEye site and drag the thumbnail over so try that first
 
 - **Exports**
   - **CSV (PPTX)**: full table
@@ -1450,6 +1451,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
