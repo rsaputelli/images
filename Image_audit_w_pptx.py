@@ -234,6 +234,47 @@ with st.sidebar:
     go = st.button("Run Audit", type="primary")
     stop = st.button("Stop")
 
+# --- User Guide (UI-only; safe to add anywhere after imports) ---
+guide_md = """
+### What this app does
+- **Website crawl** (sidebar sliders/toggles): inventories page images and CSS backgrounds on a target website.
+- **PPTX scan** (the “📑 PowerPoint Image Licensing Audit (beta)” panel): extracts embedded images and media links from uploaded .pptx files and builds reverse-image search helpers.
+
+> **Note:** Sidebar toggles apply to the **website crawl only**. The PPTX scan uses its **own** controls.
+
+### PPTX scan — quick steps
+1) Open **📑 PowerPoint Image Licensing Audit (beta)**  
+2) **Upload** one or more `.pptx` files  
+3) (Optional) Set thresholds and brand terms; enable **Deduplicate by image content (SHA-1)** to suppress exact dupes  
+4) Click **Scan PPTX**
+
+You’ll get a table with **Preview**, **Download**, **Google**, **TinEye**, and **Notes**.
+
+- **Google / TinEye**  
+  - If the slide picture has a **direct image URL** hyperlink (e.g. ends in .jpg/.png), links are **prefilled**.  
+  - If there’s **no public URL** (typical for embedded images), links open the **upload pages**; click **Download** and upload the file there.
+
+- **Exports**
+  - **CSV (PPTX)**: full table.  
+  - **Excel (PPTX)**: same, without Google/TinEye columns.  
+  - **HTML Report**: includes previews, a **Download** link for each image, and **Open** links for Google/TinEye.  
+  - **ALL artifacts (ZIP)**: CSV, Excel, HTML, plus `images/` (each embedded image).
+
+### PPTX flags (thresholds; not blockers)
+- **Very large file size ≥ N MB** → adds a note like “Very large file (≥ 5 MB)”.
+- **Very large dimensions ≥ N px** (width *or* height) → adds a note like “Very large dimensions (WxH px)”.
+The app never edits your PPTX; it only reads and exports.
+
+### Tips
+- If prefilled searches fail (long URLs, redirects, or engine limits), **Download** then upload to Google/TinEye.
+- Use **Show duplicates only** (when dedupe is on) to review which images were suppressed as dupes.
+"""
+
+# Place this block after your existing sidebar controls/buttons:
+with st.sidebar.expander("❓ Help / User Guide", expanded=False):
+    st.markdown(guide_md)
+
+
 # Handle checkpoint load/reset
 if resume_upload is not None and load_clicked:
     try:
@@ -1417,6 +1458,7 @@ if st.session_state.get("pptx_artifacts"):
     st.markdown("**Previous scan:**")
     st.download_button("⬇️ ALL artifacts ZIP (prev)", data=art["all_zip"], file_name="pptx_audit_bundle.zip",
                        mime="application/zip", key="pptx_prev_all")
+
 
 
 
